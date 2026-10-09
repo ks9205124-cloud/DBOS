@@ -1,6 +1,6 @@
 package com.dbos.retry;
 
-import javax.xml.datatype.Duration;
+import java.time.Duration;
 
 public interface RetryPolicy {
 
