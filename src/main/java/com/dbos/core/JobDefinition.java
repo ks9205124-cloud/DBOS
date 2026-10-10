@@ -30,7 +30,6 @@ public class JobDefinition {
     private final Job job;
     private final RetryPolicy retryPolicy;
     private final Trigger trigger;
-    private JobStatus jobStatus;
 
     private JobDefinition(JobDefinitionBuilder jobDefinitionBuilder) {
         this.id = jobDefinitionBuilder.id;
@@ -38,7 +37,6 @@ public class JobDefinition {
         this.job = jobDefinitionBuilder.job;
         this.retryPolicy = jobDefinitionBuilder.retryPolicy;
         this.trigger = jobDefinitionBuilder.trigger;
-        this.jobStatus = jobDefinitionBuilder.jobStatus;
     }
     public long getId() {
         return id;
@@ -52,17 +50,8 @@ public class JobDefinition {
     public RetryPolicy getRetryPolicy() {
         return retryPolicy;
     }
-    public JobStatus getJobStatus() {
-        return jobStatus;
-    }
     public Trigger getTrigger() {
         return trigger;
-    }
-    public void setJobStatus(JobStatus newJobStatus) {
-        if (!this.jobStatus.canTransitionTo(newJobStatus)) {
-            throw new IllegalStateException("Job status can't transition to " + newJobStatus);
-        }
-        this.jobStatus = newJobStatus;
     }
 
     public static JobDefinitionBuilder builder(String name) {
@@ -74,7 +63,6 @@ public class JobDefinition {
         private long id;
         private Job job;
         private RetryPolicy retryPolicy;
-        private final JobStatus jobStatus = JobStatus.PENDING;
         private Trigger trigger;
 
         // required field during obj creation
@@ -95,7 +83,7 @@ public class JobDefinition {
             this.trigger = trigger;
             return this;
         }
-
+        // TODO: validate job, trigger, retryPolicy
         public JobDefinition build() {
             if (this.name == null) {
                 throw new IllegalStateException("Job definition name is required");
