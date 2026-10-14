@@ -17,12 +17,19 @@ public class JobExecution {
     private Instant endedAt;
 
     public JobExecution(long id, long jobId, int attemptNumber, Instant scheduledFor) {
+
+
         this.id = id;
         this.jobId = jobId;
         this.attemptNumber = attemptNumber;
         this.scheduledFor = scheduledFor;
 
         // TODO generate error for attempt number less than 1
+        if (attemptNumber < 1) {
+            throw new IllegalArgumentException(
+                    "Attempt number must be at least 1"
+            );
+        }
     }
 
     public long getId() {
@@ -74,8 +81,38 @@ public class JobExecution {
     }
 
     // TODO implement mark done
+    public void markDone(Instant endedAt) {
+        if (!status.canTransitionTo(JobStatus.DONE)) {
+            throw new IllegalStateException(
+                    "Execution " + id + " cannot move from " + status + " to DONE"
+            );
+        }
+
+        this.status = JobStatus.DONE;
+        this.endedAt = endedAt;
+    }
     // TODO implement mark failed
+    public void markFailed(Instant endedAt) {
+        if (!status.canTransitionTo(JobStatus.FAILED)) {
+            throw new IllegalStateException(
+                    "Execution " + id + " cannot move from " + status + " to FAILED"
+            );
+        }
+
+        this.status = JobStatus.FAILED;
+        this.endedAt = endedAt;
+    }
     // TODO implement mark cancelled
+    public void markCancelled(Instant endedAt) {
+        if (!status.canTransitionTo(JobStatus.CANCELED)) {
+            throw new IllegalStateException(
+                    "Execution " + id + " cannot move from " + status + " to CANCELED"
+            );
+        }
+
+        this.status = JobStatus.CANCELED;
+        this.endedAt = endedAt;
+    }
 
     public JobExecution withId(long newId) {
         JobExecution copy = new JobExecution(newId, jobId, attemptNumber, scheduledFor);
