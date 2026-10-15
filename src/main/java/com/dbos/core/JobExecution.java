@@ -24,7 +24,6 @@ public class JobExecution {
         this.attemptNumber = attemptNumber;
         this.scheduledFor = scheduledFor;
 
-        // TODO generate error for attempt number less than 1
         if (attemptNumber < 1) {
             throw new IllegalArgumentException(
                     "Attempt number must be at least 1"
@@ -65,7 +64,7 @@ public class JobExecution {
     }
 
 
-    // working -> covert state from pending to running
+    // working -> convert state from pending to running
     /*
         when running startAt, workerId not initialized therefore initialize them,
         and change the state
@@ -80,7 +79,11 @@ public class JobExecution {
         this.startedAt = startedAt;
     }
 
-    // TODO implement mark done
+    /* working -> convert state from running to done
+
+    when execution is completed, record the ending time
+    and change the state to DONE
+    */
     public void markDone(Instant endedAt) {
         if (!status.canTransitionTo(JobStatus.DONE)) {
             throw new IllegalStateException(
@@ -91,7 +94,11 @@ public class JobExecution {
         this.status = JobStatus.DONE;
         this.endedAt = endedAt;
     }
-    // TODO implement mark failed
+    /* working -> convert state from running to failed
+
+    when execution fails, record the ending time
+    and change the state to FAILED
+    */
     public void markFailed(Instant endedAt) {
         if (!status.canTransitionTo(JobStatus.FAILED)) {
             throw new IllegalStateException(
@@ -102,7 +109,11 @@ public class JobExecution {
         this.status = JobStatus.FAILED;
         this.endedAt = endedAt;
     }
-    // TODO implement mark cancelled
+    /* working -> convert state from pending to canceled
+
+    when a pending execution is cancelled, record the ending time
+    and change the state to CANCELED
+    */
     public void markCancelled(Instant endedAt) {
         if (!status.canTransitionTo(JobStatus.CANCELED)) {
             throw new IllegalStateException(
