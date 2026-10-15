@@ -1,5 +1,6 @@
 package com.dbos.store;
 
+import com.dbos.core.DuplicateJobException;
 import com.dbos.core.JobDefinition;
 import com.dbos.core.JobExecution;
 

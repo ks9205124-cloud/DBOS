@@ -3,17 +3,17 @@ package com.dbos.core;
 public enum JobStatus {
 
     PENDING,
-    CANCELED,
+    CANCELLED,
     RUNNING,
     DONE,
     FAILED;
 
-    boolean canTransitionTo(JobStatus newStatus) {
+    public boolean canTransitionTo(JobStatus newStatus) {
         return switch (this) {
-            case PENDING -> newStatus == CANCELED || newStatus == RUNNING;
+            case PENDING -> newStatus == CANCELLED || newStatus == RUNNING;
             case RUNNING -> newStatus == DONE || newStatus == FAILED;
             case FAILED -> newStatus == PENDING;
-            case DONE,CANCELED -> false;
+            case DONE,CANCELLED -> false;
         };
     }
 }
