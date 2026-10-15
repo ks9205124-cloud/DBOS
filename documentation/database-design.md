@@ -1,4 +1,4 @@
-# Database Design — DBOS
+git pull # Database Design — DBOS
 
 This document describes the Oracle schema behind DBOS: what each table is for, how the tables connect, and why the design is shaped this way. It is the reference for the ER diagram, the DDL, and the DBMS report.
 
