@@ -1,14 +1,17 @@
 package com.dbos.core;
 
+import com.dbos.retry.FixedDelayPolicy;
 import com.dbos.retry.RetryPolicy;
 import com.dbos.trigger.Trigger;
+
+import java.time.Duration;
 
 /*
  * Why we use a Builder here:
  *
- * 1. Optional fields without constructor bloat: Only 'name' is strictly required
- *    by build() today. Callers set what's available instead of passing nulls.
- *    (TODO: build() should also require job and trigger.)
+ * 1. Fields are set by name, and build() checks the result. A job needs a
+ *    name, a Job to run and a Trigger to schedule it. The retry policy is
+ *    optional: a job without one simply never retries.
  *
  * 2. Self-documenting call sites:
  *    Compare:
@@ -25,10 +28,15 @@ import com.dbos.trigger.Trigger;
  *
  * A JobDefinition is fully immutable. The id and the active flag are the only
  * things that ever differ between saved versions of a job, so they change by
- * making a copy (withId, withActive), never by mutation.
+ * making a copy (withId, withActive), never by mutation. Because a built
+ * JobDefinition is always complete, the engine never has to check for nulls.
  */
 
 public final class JobDefinition {
+
+    // used when a job is built without a retry policy: zero retries, so the first failure is final
+    private static final RetryPolicy NO_RETRY = new FixedDelayPolicy(0, Duration.ZERO);
+
     private final long id;
     private final String name;
     private final Job job;
@@ -101,12 +109,11 @@ public final class JobDefinition {
         private Trigger trigger;
         private boolean active = true;   // a new job rule starts active
 
-        // required field during obj creation
+        // the name is trimmed, so " report" and "report" cannot become two different jobs
         public JobDefinitionBuilder(String name) {
-            this.name = name;
+            this.name = (name == null) ? null : name.trim();
         }
 
-        // optional field during object creation
         public JobDefinitionBuilder job(Job job) {
             this.job = job;
             return this;
@@ -120,10 +127,18 @@ public final class JobDefinition {
             return this;
         }
 
-        // TODO: validate job, trigger, retryPolicy
         public JobDefinition build() {
-            if (this.name == null) {
+            if (name == null || name.isEmpty()) {
                 throw new IllegalStateException("Job definition name is required");
+            }
+            if (job == null) {
+                throw new IllegalStateException("Job '" + name + "' needs a Job to run");
+            }
+            if (trigger == null) {
+                throw new IllegalStateException("Job '" + name + "' needs a Trigger");
+            }
+            if (retryPolicy == null) {
+                retryPolicy = NO_RETRY;
             }
             return new JobDefinition(this);
         }
