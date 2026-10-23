@@ -7,6 +7,7 @@ import com.dbos.core.JobExecution;
 import com.dbos.core.JobExecutionException;
 import com.dbos.engine.ExecutionListener;
 import com.dbos.engine.SchedulerEngine;
+import com.dbos.engine.WorkerPool;
 import com.dbos.retry.ExponentialBackoffPolicy;
 import com.dbos.retry.FixedDelayPolicy;
 import com.dbos.retry.RetryPolicy;
@@ -37,30 +38,35 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /*
  * Swing front end for the scheduler.
  *
- * The engine ticks on a background thread; the window only reads from the
- * store and calls register/cancel. The store is synchronized and hands out
- * copies, so the two threads never share mutable state.
+ * A pool of worker threads processes due runs in the background, so a slow
+ * job only occupies one worker and the others keep going (the Worker column
+ * shows which worker took each run). The window only reads from the store and
+ * calls register/cancel. The store is synchronized and hands out copies, so
+ * the Swing thread and the workers never share mutable state.
  */
 public class SchedulerApp extends JFrame {
 
     private static final DateTimeFormatter TIME =
             DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
+    private static final int WORKER_COUNT = 4;
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(200);
+
     private final SchedulerEngine engine;
+    private final WorkerPool pool;
 
     // registration form
     private final JTextField nameField = new JTextField("my-job", 12);
@@ -87,7 +93,9 @@ public class SchedulerApp extends JFrame {
     public SchedulerApp() {
         super("DBOS Job Scheduler");
         Clock clock = Clock.systemUTC();
-        this.engine = new SchedulerEngine(new InMemoryJobStore(clock), clock, new LogListener());
+        LogListener listener = new LogListener();
+        this.engine = new SchedulerEngine(new InMemoryJobStore(clock), clock, listener);
+        this.pool = new WorkerPool(engine, WORKER_COUNT, POLL_INTERVAL, listener, null);
 
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout(8, 8));
@@ -112,20 +120,15 @@ public class SchedulerApp extends JFrame {
         add(tables, BorderLayout.CENTER);
         add(logPane, BorderLayout.SOUTH);
 
-        // the engine ticks off the Swing thread, so a slow job cannot freeze the window
-        ScheduledExecutorService ticker = Executors.newSingleThreadScheduledExecutor(task -> {
-            Thread thread = new Thread(task, "engine-ticker");
-            thread.setDaemon(true);
-            return thread;
-        });
-        ticker.scheduleWithFixedDelay(() -> {
-            try {
-                engine.tick();
-            } catch (Exception e) {
-                // keep ticking; scheduleWithFixedDelay would stop if this escaped
-                new LogListener().message("engine error: " + e);
+        // the workers run off the Swing thread, so a slow job cannot freeze the window
+        pool.start();
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                // let running jobs finish briefly; EXIT_ON_CLOSE then ends the program
+                pool.stop(Duration.ofSeconds(1));
             }
-        }, 0, 300, TimeUnit.MILLISECONDS);
+        });
 
         new javax.swing.Timer(500, e -> refresh()).start();
     }
@@ -309,7 +312,7 @@ public class SchedulerApp extends JFrame {
         };
     }
 
-    // writes the engine's events into the log pane (called from the ticker thread)
+    // writes the engine's events into the log pane (called from the worker threads)
     private class LogListener implements ExecutionListener {
 
         void message(String text) {
@@ -333,7 +336,8 @@ public class SchedulerApp extends JFrame {
 
         @Override
         public void onRunStarted(JobDefinition job, JobExecution run) {
-            message("started   '" + job.getName() + "' attempt " + run.getAttemptNumber());
+            message("started   '" + job.getName() + "' attempt " + run.getAttemptNumber()
+                    + " on worker " + run.getWorkerId().map(String::valueOf).orElse("?"));
         }
 
         @Override
@@ -350,6 +354,11 @@ public class SchedulerApp extends JFrame {
         @Override
         public void onScheduleEnded(JobDefinition job) {
             message("schedule ended for '" + job.getName() + "'");
+        }
+
+        @Override
+        public void onWorkerError(long workerId, Throwable problem) {
+            message("worker " + workerId + " error: " + problem);
         }
     }
 

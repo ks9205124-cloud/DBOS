@@ -15,8 +15,9 @@ import java.util.Optional;
  *   3. schedule what comes next: a retry after a failure, otherwise the
  *      job's next regular run (or nothing, if the schedule has ended)
  *
- * Any Exception from the job is an ordinary failure, so one bad job never
- * stops the caller. Listener errors are swallowed for the same reason.
+ * Anything the job throws, including an Error such as StackOverflowError, is
+ * an ordinary failure, so one bad job never stops the caller or leaves its run
+ * stuck in RUNNING. Listener errors are swallowed for the same reason.
  * Store errors are not swallowed; they propagate to the caller.
  *
  * If the job was cancelled while the run was in progress, the run still
@@ -49,7 +50,7 @@ final class ExecutionProcessor {
         JobDefinition job = found.get();
 
         fire(() -> listener.onRunStarted(job, copy(run)));
-        Exception failure = execute(job);
+        Throwable failure = execute(job);
         Instant ended = clock.instant();
 
         if (failure == null) {
@@ -65,12 +66,12 @@ final class ExecutionProcessor {
         }
     }
 
-    private Exception execute(JobDefinition job) {
+    private Throwable execute(JobDefinition job) {
         try {
             job.getJob().execute();
             return null;
-        } catch (Exception e) {
-            return e;
+        } catch (Throwable t) {
+            return t;
         }
     }
 

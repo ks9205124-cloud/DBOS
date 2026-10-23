@@ -52,4 +52,5 @@ public interface JobStore {
 
 - **Execution-Aware Seam:** Because a recurring job template is immutable and separate from its individual runs, state tracking and status updates are handled strictly on `JobExecution` objects rather than on job definitions.
 - **At-Least-Once Support:** The atomic claim pattern guarantees that no two workers can claim the same execution simultaneously, preventing race conditions.
+- **Copies Across the Boundary:** the store hands out copies of executions, and a caller's changes reach the store only through `updateExecution`. `JobDefinition` is immutable and shared as is. This keeps the in-memory store honest about how a database behaves.
 - **No Deletes:** Deletion methods are intentionally absent. All cancellations and terminations are captured via status transitions to maintain an intact audit trail.

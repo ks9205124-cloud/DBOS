@@ -23,9 +23,9 @@ import java.util.Optional;
  * ExecutionProcessor. The engine never prints; it reports through the
  * ExecutionListener. All time comes from the injected Clock.
  *
- * tick() runs on the calling thread. The worker pool added later calls
- * runNext(workerId) from several threads, which is safe because the store's
- * claim is atomic.
+ * tick() runs on the calling thread. WorkerPool calls runNext(workerId) from
+ * several threads, which is safe because the store's claim is atomic. tick()
+ * reports itself as worker 1, so use either tick() or a pool, not both.
  */
 public class SchedulerEngine {
 

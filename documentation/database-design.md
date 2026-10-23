@@ -10,7 +10,7 @@ A job in DBOS is not one row with everything crammed in. It is described in four
 
 | Layer | Question it answers | Where it lives |
 |---|---|---|
-| **Identity** | Which job is this? | `JOBS` |
+| **Identity** | Which job is this? | `JOB_DEFINITIONS` |
 | **Rules** | When does it run, and what happens on failure? | `TRIGGERS`, `RETRY_POLICIES` |
 | **Logic** | What does it actually do? | `JOB_TYPES` |
 | **Outcome** | What happened when it ran? | `JOB_EXECUTIONS`, `EXECUTION_LOGS` |
@@ -26,15 +26,15 @@ Around those sit the supporting tables: who owns and operates the system (`ROLES
 ```mermaid
 erDiagram
     ROLES ||--o{ USERS : "assigned to"
-    USERS ||--o{ JOBS : "creates"
-    JOB_TYPES ||--o{ JOBS : "defines logic of"
-    TRIGGERS ||--o{ JOBS : "schedules"
-    RETRY_POLICIES ||--o{ JOBS : "governs failures of"
-    JOBS ||--o{ JOB_EXECUTIONS : "has runs"
+    USERS ||--o{ JOB_DEFINITIONS : "creates"
+    JOB_TYPES ||--o{ JOB_DEFINITIONS : "defines logic of"
+    TRIGGERS ||--o{ JOB_DEFINITIONS : "schedules"
+    RETRY_POLICIES ||--o{ JOB_DEFINITIONS : "governs failures of"
+    JOB_DEFINITIONS ||--o{ JOB_EXECUTIONS : "has runs"
     WORKERS |o--o{ JOB_EXECUTIONS : "claims and runs"
     JOB_EXECUTIONS ||--o{ EXECUTION_LOGS : "records"
-    JOBS ||--o{ JOB_DEPENDENCIES : "waits (phase 2)"
-    JOBS ||--o{ JOB_DEPENDENCIES : "is prerequisite (phase 2)"
+    JOB_DEFINITIONS ||--o{ JOB_DEPENDENCIES : "waits (phase 2)"
+    JOB_DEFINITIONS ||--o{ JOB_DEPENDENCIES : "is prerequisite (phase 2)"
 ```
 
 ---
@@ -45,7 +45,7 @@ Types are Oracle types. Oracle XE has no native boolean, so flags are `NUMBER(1)
 
 ### 3.1 Identity layer
 
-**`JOBS`** is the recurring rule: the permanent identity of a job. It holds no status.
+**`JOB_DEFINITIONS`** is the recurring rule: the permanent identity of a job. It holds no status.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -84,7 +84,7 @@ A table-level check ties the columns to the type: a `FIXED_RATE` row must have `
 | `max_retries` | NUMBER | NOT NULL, CHECK >= 0 |
 | `backoff_seconds` | NUMBER | NOT NULL, CHECK >= 0 |
 
-A job that should never retry points at a seeded row with `max_retries = 0`, so `JOBS.retry_policy_id` is never NULL.
+A job that should never retry points at a seeded row with `max_retries = 0`, so `JOB_DEFINITIONS.retry_policy_id` is never NULL.
 
 Both tables can be **shared**: ten jobs that all run "every 30 minutes" can point at one trigger row. They map one-to-one onto the Java interfaces `Trigger` and `RetryPolicy`, so loading a row means constructing the matching `FixedRateTrigger`, `OneTimeTrigger`, `ExponentialBackoffPolicy` or `FixedDelayPolicy`.
 
@@ -108,7 +108,7 @@ This is the registry that connects a database row to executable code. The schedu
 | Column | Type | Constraints |
 |---|---|---|
 | `execution_id` | NUMBER | PK, identity |
-| `job_id` | NUMBER | FK → `JOBS`, NOT NULL |
+| `job_id` | NUMBER | FK → `JOB_DEFINITIONS`, NOT NULL |
 | `worker_id` | NUMBER | FK → `WORKERS`, NULL until a worker claims it |
 | `status` | VARCHAR2(20) | NOT NULL, CHECK in (`PENDING`, `RUNNING`, `DONE`, `FAILED`, `CANCELLED`) |
 | `attempt_number` | NUMBER | NOT NULL, default 1, CHECK >= 1 |
@@ -144,7 +144,7 @@ Roles are enforced twice: the application hides actions a role cannot do, and da
 
 ## 4. Workers: what they are and why the table exists
 
-A **worker** is an independent unit of execution: something that picks up a pending execution and runs it. In the Java engine, workers are the tasks in the virtual-thread pool. In the database, a `WORKERS` row is that worker's identity.
+A **worker** is an independent unit of execution: something that picks up a pending execution and runs it. In the Java engine, workers are the threads in the worker pool. In the database, a `WORKERS` row is that worker's identity.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -171,7 +171,7 @@ The table earns its place in two ways:
 
 Take "clean temp files, every 10 seconds, retry up to 3 times with a fixed 2-second delay."
 
-1. **Registering it.** A `TRIGGERS` row (`FIXED_RATE`, 10 seconds) and a `RETRY_POLICIES` row (`FIXED`, 3, 2) are created or reused. A `JOBS` row is created pointing at them, plus an existing `JOB_TYPES` row for the cleanup code.
+1. **Registering it.** A `TRIGGERS` row (`FIXED_RATE`, 10 seconds) and a `RETRY_POLICIES` row (`FIXED`, 3, 2) are created or reused. A `JOB_DEFINITIONS` row is created pointing at them, plus an existing `JOB_TYPES` row for the cleanup code.
 2. **First run.** The engine creates a `JOB_EXECUTIONS` row: `PENDING`, attempt 1, `scheduled_for` 12:00:00.
 3. **Claiming.** A worker's claim moves it to `RUNNING`, sets `worker_id` and `started_at`. The audit trigger writes a log row for the change.
 4. **Success.** It becomes `DONE` with `ended_at` set, and another log row is written. The engine asks the trigger for the next fire time and creates a **new** `PENDING` execution for 12:00:10. The first execution stays `DONE` permanently as history.
@@ -186,14 +186,14 @@ Nothing is ever overwritten, which is why one table of executions can answer que
 | Relationship | Cardinality | Notes |
 |---|---|---|
 | `ROLES` → `USERS` | 1 to many | each user has exactly one role |
-| `USERS` → `JOBS` | 1 to many | the creator |
-| `JOB_TYPES` → `JOBS` | 1 to many | many jobs can share a type |
-| `TRIGGERS` → `JOBS` | 1 to many | trigger rows can be shared |
-| `RETRY_POLICIES` → `JOBS` | 1 to many | policy rows can be shared |
-| `JOBS` → `JOB_EXECUTIONS` | 1 to many | one rule, many runs |
+| `USERS` → `JOB_DEFINITIONS` | 1 to many | the creator |
+| `JOB_TYPES` → `JOB_DEFINITIONS` | 1 to many | many jobs can share a type |
+| `TRIGGERS` → `JOB_DEFINITIONS` | 1 to many | trigger rows can be shared |
+| `RETRY_POLICIES` → `JOB_DEFINITIONS` | 1 to many | policy rows can be shared |
+| `JOB_DEFINITIONS` → `JOB_EXECUTIONS` | 1 to many | one rule, many runs |
 | `WORKERS` → `JOB_EXECUTIONS` | 1 to many (optional) | an unclaimed execution has no worker |
 | `JOB_EXECUTIONS` → `EXECUTION_LOGS` | 1 to many | |
-| `JOBS` ↔ `JOBS` via `JOB_DEPENDENCIES` | many to many, self-referencing | phase 2 |
+| `JOB_DEFINITIONS` ↔ `JOB_DEFINITIONS` via `JOB_DEPENDENCIES` | many to many, self-referencing | phase 2 |
 
 ---
 
@@ -201,9 +201,9 @@ Nothing is ever overwritten, which is why one table of executions can answer que
 
 All tables are in 3NF: every non-key column depends on the key, the whole key, and nothing but the key.
 
-- `JOBS` holds only facts about the job itself. Trigger, retry and type details are held by reference, so changing a shared trigger changes it in one place.
-- `TRIGGERS` and `RETRY_POLICIES` as separate tables are chosen mainly for reuse and to avoid a `JOBS` table full of columns that are NULL for most rows (a future cron trigger would add one more). The `CHECK` constraints keep the type-specific columns consistent.
-- Status exists only on `JOB_EXECUTIONS`. Keeping a copy on `JOBS` as well would store the same fact twice and let the two drift apart (an update anomaly).
+- `JOB_DEFINITIONS` holds only facts about the job itself. Trigger, retry and type details are held by reference, so changing a shared trigger changes it in one place.
+- `TRIGGERS` and `RETRY_POLICIES` as separate tables are chosen mainly for reuse and to avoid a `JOB_DEFINITIONS` table full of columns that are NULL for most rows (a future cron trigger would add one more). The `CHECK` constraints keep the type-specific columns consistent.
+- Status exists only on `JOB_EXECUTIONS`. Keeping a copy on `JOB_DEFINITIONS` as well would store the same fact twice and let the two drift apart (an update anomaly).
 - `JOB_EXECUTIONS` and `EXECUTION_LOGS` are split because one execution has many log lines; merging them would repeat the execution's data on every log row.
 - `USERS` and `ROLES` are split so the role name is stored once, not once per user.
 - `JOB_DEPENDENCIES` is the standard way to resolve a many-to-many relationship: a table whose composite key is the pair of foreign keys.
@@ -212,7 +212,7 @@ All tables are in 3NF: every non-key column depends on the key, the whole key, a
 
 ## 8. Phase 2: job dependencies
 
-`JOB_DEPENDENCIES` (`job_id`, `depends_on_job_id`, composite PK, both FK → `JOBS`, CHECK that the two differ) lets one job wait for another.
+`JOB_DEPENDENCIES` (`job_id`, `depends_on_job_id`, composite PK, both FK → `JOB_DEFINITIONS`, CHECK that the two differ) lets one job wait for another.
 
 **Recommendation: treat dependency enforcement as phase 2.** The reasons:
 
@@ -227,7 +227,7 @@ All tables are in 3NF: every non-key column depends on the key, the whole key, a
 
 ## 9. Open decisions
 
-1. **Is `JOBS.name` unique?** If names can repeat, there is no natural meaning for the "job already exists" case in `JobStore.addJob`. Either make `name` UNIQUE, or drop the duplicate-check idea.
+1. **Is `JOB_DEFINITIONS.name` unique?** Decided: yes. The in-memory store rejects a duplicate name with `DuplicateJobException`, so `name` is UNIQUE in Oracle too and behaves the same way.
 2. **Cascade on logs.** `ON DELETE CASCADE` from executions to logs conflicts with "history is never erased" if the archive procedure deletes old executions. Either the archive copies logs out first, or the cascade is dropped.
 3. **Worker granularity.** One `WORKERS` row per logical worker in the pool (for example four of them, which makes the demo show concurrency clearly), or one row per application instance. The first is the suggested default.
 4. **`WORKERS.status` is derivable** from how stale `last_heartbeat` is. Keeping both is convenient for queries but can disagree; either the reconciler is the only thing that writes `status`, or the column is dropped.

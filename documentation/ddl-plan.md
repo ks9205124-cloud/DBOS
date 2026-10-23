@@ -16,7 +16,7 @@ Changing these after the scripts exist is painful, so settle them before writing
 
 | Decision | Recommendation |
 |---|---|
-| Name of the job table |  `JOBS` |
+| Name of the job table | `JOB_DEFINITIONS` (matches the ER diagram) |
 | Key naming | Every primary key is `id`. Every foreign key is `<entity>_id`, so `retry_policy_id`, not `policy_id` |
 | Job name uniqueness | `JOB_DEFINITIONS.name` is UNIQUE. The in-memory store rejects duplicate names, and Oracle must behave the same |
 | Active flag | `is_active` on `JOB_DEFINITIONS`, `NUMBER(1)`, default 1 |

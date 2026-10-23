@@ -18,7 +18,7 @@ Java is the **brain and the muscle**: it decides when things run, starts them, r
 | When a job runs next | Java | the `Trigger` interface |
 | Whether and how long to retry | Java | the `RetryPolicy` interface |
 | Recording a retry atomically | Oracle | PL/SQL procedure with a savepoint |
-| Running many jobs at once | Java | worker pool of virtual threads |
+| Running many jobs at once | Java | a fixed pool of worker threads (`WorkerPool`) |
 | Stopping two workers taking the same run | Oracle | row locking with `SKIP LOCKED` |
 | Storing jobs, runs and results | Oracle | the 10 tables |
 | Audit trail of status changes | Oracle | database trigger |
@@ -79,7 +79,7 @@ Java decides; Oracle records.
 
 The backoff arithmetic exists once, in Java. The retry procedure exists to make the *recording* atomic, and it takes a delay rather than an absolute time so that Oracle can add it to its own clock.
 
-**Attempt numbering (proposed convention, not yet applied to the code).** `attempt_number` is 1-based: 1 is the original run, 2 is the first retry. The retry policy receives the number of the attempt that just failed. With a maximum of 3 retries, a retry is allowed while that number is at most 3, so a job can run up to 4 times in total. For exponential backoff the wait is the base delay times 2 raised to (attempt number minus 1): 2s, 4s, 8s for a 2-second base. The current policy code assumes counting from 0 and must be adjusted to match.
+**Attempt numbering (applied in the code).** `attempt_number` is 1-based: 1 is the original run, 2 is the first retry. The retry policy receives the number of the attempt that just failed. With a maximum of 3 retries, a retry is allowed while that number is at most 3, so a job can run up to 4 times in total. For exponential backoff the wait is the base delay times 2 raised to (attempt number minus 1): 2s, 4s, 8s for a 2-second base. Both retry policies and their tests use this convention.
 
 The next scheduled run of a recurring job starts again at attempt 1; the attempt counter only counts consecutive tries of the same run.
 
@@ -117,7 +117,7 @@ The engine talks only to the `JobStore` interface. Behind it are two implementat
 - **In-memory store:** no database, used for development and for demonstrating the object-oriented design. Claiming a due run here is done in Java with proper locking.
 - **Oracle store:** the real thing, where claiming is the PL/SQL procedure with row locking.
 
-Because "claim the next due run" is implemented differently in each, it belongs on the `JobStore` interface itself (as a claim-next-due operation), with one implementation per store. That is also why the in-memory store has to be made thread-safe before the worker pool is introduced.
+Because "claim the next due run" is implemented differently in each, it belongs on the `JobStore` interface itself (as a claim-next-due operation), with one implementation per store. That is also why the in-memory store is thread-safe: its claim is a synchronized method, and the worker pool relies on that atomicity for correctness.
 
 ---
 
@@ -139,7 +139,7 @@ The transition rule exists in two places, which is deliberate defense in depth b
 ## 9. Open decisions
 
 1. **A generic procedure-calling job.** One `Job` implementation could take a PL/SQL procedure name and call it, so adding a new database job means adding a `JOB_TYPES` row and no new Java. That needs a column to hold the procedure name. Worth deciding before the DDL is final.
-2. **Apply the attempt-numbering convention** in section 4.6 to the retry policies, the comments, and `core-interfaces.md`.
+2. ~~Apply the attempt-numbering convention~~ Done: the retry policies, tests and `core-interfaces.md` all use 1-based attempts.
 3. **Retry procedure signature.** The proposal is that it takes the failed execution and a delay in seconds. Agree on this before the PL/SQL is written.
 4. **Whether to add the transition-enforcing trigger.** It strengthens the "bypass the app" answer but duplicates the rule.
 5. **Idempotency.** Decide which demo jobs are safe to run twice, so the at-least-once explanation has a concrete example.
@@ -151,8 +151,8 @@ The transition rule exists in two places, which is deliberate defense in depth b
 | Topic | OOP report | DBMS report |
 |---|---|---|
 | `Job`, `Trigger`, `RetryPolicy` as swappable strategies | yes | |
-| Builder, singleton, enum with behavior | yes | |
-| Worker pool and virtual threads | yes | |
+| Builder, enum with behavior, listener (observer) | yes | |
+| Worker thread pool (virtual threads as a possible extension) | yes | |
 | Tables, keys, constraints, normalization | | yes |
 | Claim procedure with row locking | | yes |
 | Retry procedure with savepoint | | yes |

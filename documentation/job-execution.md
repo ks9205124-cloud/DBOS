@@ -57,7 +57,7 @@ A run's status can only move along the legal paths defined by the `JobStatus` en
 | `PENDING` | `RUNNING`, `CANCELLED` |
 | `RUNNING` | `DONE`, `FAILED` |
 | `DONE` | nothing |
-| `FAILED` | nothing for an execution (see the retry note below) |
+| `FAILED` | nothing (a retry is a new execution, see the retry note below) |
 | `CANCELLED` | nothing |
 
 Each real event has its own method:
@@ -67,7 +67,7 @@ Each real event has its own method:
 | `markRunning(workerId, startedAt)` | a worker claims and starts the run | `PENDING` → `RUNNING` | the worker and the start time |
 | `markDone(endedAt)` | the job finished successfully | `RUNNING` → `DONE` | the end time |
 | `markFailed(endedAt)` | the job threw an error | `RUNNING` → `FAILED` | the end time |
-| `cancel(endedAt)` | an operator stopped a run that had not started | `PENDING` → `CANCELLED` | the end time |
+| `markCancelled(endedAt)` | an operator stopped a run that had not started | `PENDING` → `CANCELLED` | the end time |
 
 **Every method checks the move before changing anything.** It asks the enum whether the current status can go to the new one. If not, it throws an `IllegalStateException` and the run is left untouched. For example, calling `markDone` on a run that is still `PENDING` fails, because a run cannot finish without having started.
 
@@ -79,7 +79,7 @@ Each real event has its own method:
 
 ### Retry note
 
-A retry is not a status moving backwards. When a run fails and the retry policy allows another attempt, the engine creates a **new** `JobExecution` with the attempt number increased by one. The failed run stays `FAILED` permanently as part of the job's history. This is why `FAILED` has no outgoing moves for an execution, even though the enum still allows `FAILED` to `PENDING`.
+A retry is not a status moving backwards. When a run fails and the retry policy allows another attempt, the engine creates a **new** `JobExecution` with the attempt number increased by one. The failed run stays `FAILED` permanently as part of the job's history. This is why `FAILED` has no outgoing moves: the enum treats `DONE`, `FAILED` and `CANCELLED` as final.
 
 ---
 
@@ -100,13 +100,12 @@ If step 3 fails instead, `markFailed(12:00:11)` marks the run `FAILED`. The engi
 
 - **`JobDefinition`** holds the rule. Many executions point at one definition through `jobId`.
 - **`JobStatus`** supplies the legal moves. `JobExecution` is the only place that applies them to a run.
-- **`JobStore`** will save executions, find them, and claim the next due one. Its contract is being redesigned around executions.
+- **`JobStore`** saves executions, lists them, and atomically claims the next due one. It hands out copies of executions, so a worker's changes reach the store only through `updateExecution`.
 - **`JOB_EXECUTIONS` table** mirrors these fields. `EXECUTION_LOGS` records each status change separately, written by a database trigger, so a run does not need to remember its own history.
 
 ---
 
-## 7. Not done yet
+## 7. Notes on the implementation
 
-- **The constructor does not validate its inputs.** It currently accepts any values, including an attempt number below 1 or a missing scheduled time. These should be rejected at creation, since bad data caught there is easier to trace than a failure later in the engine.
-- **The four lifecycle methods repeat the same check.** It can be moved into one private helper so the rule is written once.
-- **Thread safety.** A run is mutable, so once several workers share runs, status changes will need the same protection as the store.
+- **The constructor validates its inputs.** An attempt number below 1 or a missing scheduled time is rejected at creation, so bad data is caught where it enters rather than later in the engine.
+- **Thread safety comes from the store, not the object.** A run is mutable, but no two threads ever share one: the store gives every caller its own copy, and a worker changes its copy and writes it back through `updateExecution`, which refuses a stale copy that would move the run backwards.

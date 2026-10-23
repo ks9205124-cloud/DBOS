@@ -1,43 +1,43 @@
 # Implementations — DBOS
 
-This explains the classes built on top of the core interfaces: the two `Trigger` implementations, the two `RetryPolicy` implementations, and `JobDefinition`. The actual code lives in the repo — this is about what each class does and why it's shaped the way it is.
+This explains the classes built on top of the core interfaces: the two `Trigger` implementations, the two `RetryPolicy` implementations, and `JobDefinition`. The code lives in the repo; this is about what each class does and why it is shaped the way it is.
 
 ---
 
 ## Trigger implementations
 
-**`FixedRateTrigger`** fires repeatedly, forever, at a fixed interval. It stores a single `Duration` (the interval) set once at creation. Every time it's asked "when's the next fire time?", it just adds that interval to whatever the last fire time was. This is what makes it "fixed rate" — it keeps recalculating indefinitely, as long as something keeps asking.
+**`FixedRateTrigger`** fires repeatedly at a fixed interval. It stores a single `Duration`, set once at creation, and every time it is asked "when is the next fire time?" it adds that interval to the time it is given. The interval must be positive, because a zero or negative interval would never move forward in time, so it is rejected at creation.
 
-Example: interval = 10s. Ask it with a last-fire-time of 12:00:00, it says 12:00:10. Ask it again with 12:00:10, it says 12:00:20. It never stops producing a next answer.
+Example: interval 10s. Asked with 12:00:00 it says 12:00:10; asked with 12:00:10 it says 12:00:20.
 
-**`OneTimeTrigger`** fires exactly once. Instead of recalculating on each call, it computes its single fire time **once, at creation** — "now plus this delay" — and just keeps returning that same fixed answer forever after, completely ignoring the last-run-time it's given. This is the key structural difference from `FixedRateTrigger`: there's nothing to repeat, so there's nothing to recalculate.
+**`OneTimeTrigger`** fires exactly once. It fixes its single fire time at creation and returns that same answer forever, ignoring the time it is given. There are two ways to build one: from an exact `Instant` (which is also how a stored database row is turned back into a trigger, and how tests stay repeatable), or from a delay measured from the moment the trigger is created. The engine ends the schedule when the trigger's answer is not later than the run it just finished, which is how a one-time job stops.
 
-Example: created at 21:00:00 with a 10s delay, its fire time is locked in as 21:00:10. Doesn't matter if you ask it immediately or five minutes later — it always says 21:00:10.
+Example: created at 21:00:00 with a 10s delay, the fire time is 21:00:10 however many times it is asked.
 
 ---
 
 ## RetryPolicy implementations
 
-**`ExponentialBackoffPolicy`** makes each retry wait longer than the last — the wait doubles every attempt. It's configured with a max retry count and a base delay. Whether a retry is still allowed is a simple comparison against the max. How long to wait is the base delay multiplied by 2 raised to the attempt number, computed with a left-shift rather than `Math.pow` — left-shift stays in whole-number math the entire way, so there's no floating-point rounding risk and no need to cast anything.
+Both policies count attempts from 1 and receive the number of the attempt that just failed. Both are configured with a maximum number of retries, and a retry is allowed while the failed attempt number is at most that maximum.
 
-Example: base delay 2s. Attempts 0, 1, 2 produce waits of 2s, 4s, 8s.
+**`ExponentialBackoffPolicy`** makes each retry wait twice as long as the one before. The wait is the base delay times 2 raised to (attempt number minus 1), computed with a left shift rather than floating-point math, so there is no rounding risk. The exponent is capped so a very large attempt number cannot overflow.
 
-**`FixedDelayPolicy`** is the simpler sibling — same wait every single time, no growth. The "should I retry" check is identical to the exponential version. The "how long to wait" calculation just returns the configured delay outright, ignoring which attempt number it's on.
+Example: base delay 2s, maximum 3 retries. Attempts 1, 2 and 3 failing produce waits of 2s, 4s and 8s; a fourth failure is final.
 
-Example: delay 2s. Attempts 0, 1, 2 all produce a wait of 2s.
+**`FixedDelayPolicy`** waits the same time every attempt. With a maximum of 0 it means "never retry", which is what a job built without a policy receives.
+
+Example: delay 2s, maximum 3 retries. Attempts 1, 2 and 3 failing each produce a wait of 2s.
 
 ---
 
 ## JobDefinition
 
-This is the object that ties a job together: which `Job` to run, on what `Trigger`, with what `RetryPolicy`, plus its own id, name, and current status. It's built exclusively through a nested `Builder`, never through a plain public constructor.
+`JobDefinition` is the permanent rule that ties a job together: its id, name, the `Job` to run, its `Trigger`, its `RetryPolicy` and whether it is still active. It holds **no status**; status lives on executions.
 
-**Which fields are locked vs. changeable.** Everything describing *what the job is* — id, name, the job itself, its trigger, its retry policy — is set once and never touched again. The one exception is status, which is the whole point of having `JobStatus` as a mutable field: it's expected to move through PENDING → RUNNING → DONE/FAILED over the job's life.
+**It is fully immutable.** The only things that ever differ between saved versions of a job are its id and its active flag, so those change by making a copy (`withId` for the store assigning a real id, `withActive` for cancelling), never by mutating. Because a built `JobDefinition` is always complete and never changes, it can be shared freely between threads without locking, and the engine never has to check it for missing parts.
 
-**Status is never set directly.** There's deliberately no plain setter for status. Changing it goes through a guarded method that checks the transition is actually legal (using the rules built into the `JobStatus` enum itself) before allowing it, and throws if it isn't. This means nothing in the codebase — not today, not something added six weeks from now by someone who's forgotten the rules — can silently put a job into an illegal state like jumping from DONE back to RUNNING.
+**It is built through a nested builder.** A job needs a name, a `Job` and a `Trigger`; the retry policy is optional. Two reasons for a builder instead of a long constructor: each value is named at the call site, so nobody has to look up a constructor signature or risk swapping two arguments of the same type; and `build()` is a single place where the result is validated.
 
-**Why a Builder instead of a plain constructor.** Two reasons. First, most of these fields are genuinely optional at different points of assembly — only the name is actually required — and a plain constructor would force every caller to supply everything, in a fixed order, even fields they don't have yet. Second, readability: a chained builder call names every argument at the point you set it, so nobody has to cross-reference a constructor signature to know what a bare value means, and it's structurally impossible to accidentally swap two same-typed arguments in the wrong order the way a plain constructor allows.
+**`build()` validates.** It rejects a missing or blank name, a missing job and a missing trigger with an `IllegalStateException`. The name is trimmed, so " report" and "report" cannot become two different jobs. A missing retry policy becomes a policy with zero retries.
 
-**id and status are deliberately not builder-settable.** You can't call something like `.id(...)` or `.status(...)` on the builder — on purpose. The id starts as a placeholder (0) and only becomes real once the job is actually saved by a `JobStore`, which is the thing responsible for generating real ids. The status is hardcoded to PENDING the moment a builder is created, with no way to override it, because every job genuinely does start at PENDING — there's no legitimate reason to let a caller build a "freshly created but already DONE" job.
-
-**Open question, not yet resolved:** right now, building a `JobDefinition` only checks that a name was given — it doesn't check that an actual `Job` or `Trigger` was ever attached. So it's currently possible to build a job with nothing to run and nothing to schedule it, and have that succeed silently. Worth deciding whether to validate that in `build()` now, or let it surface later as a failure once the engine actually tries to use it.
+**id and active are deliberately not builder-settable.** The id starts as a placeholder (0) and becomes real only when a `JobStore` saves the job, because the store is the thing responsible for generating ids. A new job always starts active.

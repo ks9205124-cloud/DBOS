@@ -33,4 +33,7 @@ public interface ExecutionListener {
 
     // no more runs will be scheduled for this job (for example, a finished one-time job)
     default void onScheduleEnded(JobDefinition job) { }
+
+    // a worker hit an unexpected error (for example, the store failed); the worker keeps running
+    default void onWorkerError(long workerId, Throwable problem) { }
 }

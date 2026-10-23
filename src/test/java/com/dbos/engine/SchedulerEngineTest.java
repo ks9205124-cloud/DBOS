@@ -222,6 +222,18 @@ class SchedulerEngineTest {
         assertTrue(listener.events.contains("failed:bug"));
     }
 
+    @Test
+    void anErrorFromAJobIsAlsoAnOrdinaryFailure() throws Exception {
+        Job broken = () -> { throw new StackOverflowError("deep"); };
+        JobDefinition saved = engine.register(job("broken", broken, every(10), NO_RETRY));
+
+        advance(10);
+        assertEquals(1, engine.tick());   // the run does not stay stuck in RUNNING
+
+        assertEquals(List.of(JobStatus.FAILED, JobStatus.PENDING), statuses(saved));
+        assertTrue(listener.events.contains("failed:deep"));
+    }
+
     // ---------- cancelling ----------
 
     @Test

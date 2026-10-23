@@ -5,6 +5,14 @@
 
 ---
 
+## Status: engine track (OOP side)
+
+Built and tested (81 tests): the core model, triggers, retry policies, `InMemoryJobStore`, the scheduling engine, `WorkerPool`, a console demo and a Swing GUI. See `documentation/engine.md` and `documentation/demo-script.md`.
+
+Not built, by decision: `@Scheduled` annotation and `TaskScanner`, `CronTrigger`, the `security` package. The engine is a plain class created with its dependencies (not a singleton), and the workers are platform threads (not virtual threads). The Oracle side is the data track and is described in the DBMS documents.
+
+---
+
 ## 1. What we're building
 
 A job scheduling/orchestration engine, similar in spirit to Quartz or Spring's `@Scheduled`, but built from scratch with:
@@ -23,7 +31,7 @@ com.dbos.core        → Job, JobDefinition, JobStatus (enum w/ transition rules
 com.dbos.trigger      → Trigger (interface), FixedRateTrigger, OneTimeTrigger, CronTrigger
 com.dbos.retry        → RetryPolicy (interface), ExponentialBackoffPolicy, FixedDelayPolicy
 com.dbos.store        → JobStore (interface), InMemoryJobStore, OracleJobStore
-com.dbos.engine        → SchedulerEngine (singleton), WorkerPool (virtual threads)
+com.dbos.engine        → SchedulerEngine, RunPlanner, ExecutionProcessor, WorkerPool (platform threads)
 com.dbos.annotation    → @Scheduled, TaskScanner (reflection)
 com.dbos.security     → Role, Permission, AccessControlException
 com.dbos.cli           → Console menu (thin — calls the engine only)
@@ -33,13 +41,14 @@ com.dbos.cli           → Console menu (thin — calls the engine only)
 |---|---|
 | Interfaces + polymorphism | `Trigger`, `RetryPolicy`, `JobStore` |
 | Builder pattern | `JobDefinition.builder()...build()` |
-| Singleton | `SchedulerEngine.getInstance()` |
+| Observer | `ExecutionListener` (the engine never prints; it reports events) |
+| Dependency injection | `SchedulerEngine(JobStore, Clock, ExecutionListener)`; a test clock replaces real time |
 | Strategy pattern | swappable trigger/retry behavior |
 | Reflection + custom annotations | `@Scheduled`, `TaskScanner` |
-| Static nested class | `JobDefinition.Builder` |
+| Static nested class | `JobDefinition.JobDefinitionBuilder` |
 | Enum with behavior | `JobStatus.canTransitionTo(...)` |
 | Custom exceptions | `JobExecutionException`, `AccessControlException`, `ConcurrentClaimException` |
-| Concurrency | Virtual thread `WorkerPool` |
+| Concurrency | Fixed pool of worker threads (`WorkerPool`), atomic claim in the store |
 
 **The one rule that keeps this sane:** the engine (`core`, `trigger`, `retry`, `engine`) must never import anything Oracle-specific. It only talks to `JobStore`, an interface. This is what lets the app run and demo with zero DB setup.
 
@@ -117,7 +126,7 @@ Deliverables: ER diagram (ERDplus/Dia), normalization writeup to 3NF, full DDL w
 0. Exit
 ```
 
-Startup reconciler: on launch, mark orphaned `RUNNING` rows `FAILED`, re-enqueue retryable jobs, spin up the virtual thread pool.
+Startup reconciler: on launch, mark orphaned `RUNNING` rows `FAILED`, re-enqueue retryable jobs, start the worker pool.
 
 **Crash-recovery demo — important fix:** don't use Ctrl+C, it triggers graceful JVM shutdown hooks and proves nothing. Use `taskkill /F` (Windows) or kill the process from IntelliJ's process list, then relaunch and show Oracle preserved state.
 
@@ -128,7 +137,7 @@ Startup reconciler: on launch, mark orphaned `RUNNING` rows `FAILED`, re-enqueue
 | Week | Engine track (A) | Data track (B) |
 |---|---|---|
 | 1 | Core engine + `JobStore` interface + `InMemoryJobStore`, working CLI demo, no DB needed | Draft ER diagram, finalize DDL, agree on `JobStore` contract |
-| 2 | Retry/backoff strategies, `WorkerPool` (virtual threads) | Oracle schema live, `OracleJobStore`, basic CRUD |
+| 2 | Retry/backoff strategies, `WorkerPool` (platform threads; virtual threads are a possible extension) | Oracle schema live, `OracleJobStore`, basic CRUD |
 | 3 | Annotation scanner (`@Scheduled`, `TaskScanner`) | `claim_next_job` procedure + `SKIP LOCKED`, audit trigger, cursor procedure |
 | 4 | RBAC wiring, polish, integration testing, crash-recovery demo | Views, privileges, analytics queries, DBMS report + ER diagram writeup |
 

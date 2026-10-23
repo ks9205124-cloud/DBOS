@@ -1,12 +1,12 @@
 # Core Interfaces — DBOS
 
-This document explains the five foundational types that everything else in DBOS is built on top of. They were finalized on Day 1 and should not change without both team members reviewing the change together — almost all other code (the engine, both `JobStore` implementations, the GUI) depends on these contracts staying stable.
+This document explains the foundational types that everything else in DBOS is built on top of. Almost all other code (the engine, both `JobStore` implementations, the GUI) depends on these contracts staying stable, so they should not change without both team members reviewing the change together.
 
 ---
 
 ## What is a `Job`?
 
-A `Job` is anything that knows how to run itself — a cleanup task, a database archiver, a report generator. The system doesn't need to know *what* a job does internally, only that it *can* execute.
+A `Job` is anything that knows how to run itself: a cleanup task, a database archiver, a report generator. The system does not need to know *what* a job does internally, only that it *can* execute.
 
 ```java
 public interface Job {
@@ -14,104 +14,102 @@ public interface Job {
 }
 ```
 
-- **No parameters** — a `Job` object already carries everything it needs internally (e.g. a `DatabaseArchiverJob` holds its own database connection, set up when the object was created, not passed in at execution time). This keeps the interface generic: the engine can call `.execute()` on any job without knowing its internals.
-- **`void` return** — success is simply "didn't throw."
-- **`throws JobExecutionException`** — a failure (locked file, unreachable DB, etc.) is treated as an exceptional, unexpected outcome, not a routine one, so it's communicated via an exception rather than a return value.
+- **No parameters.** A `Job` object already carries everything it needs internally (for example a database archiver holds its own connection, set up when the object was created). This keeps the interface generic: the engine can call `execute()` on any job without knowing its internals.
+- **`void` return.** Success is simply "did not throw".
+- **`throws JobExecutionException`.** A failure is an exceptional outcome, so it is communicated by an exception rather than a return value. The engine goes further and treats *anything* a job throws, even a runtime exception or an `Error`, as an ordinary failed run.
+- **A lambda is enough.** Because `Job` has exactly one method, any job can be written as a lambda, which is how the demo and the tests create jobs.
 
 ---
 
-## `Trigger` — "when should this run next?"
+## `Trigger`: "when should this run next?"
 
-A `Trigger` answers a single timing question, independent of what the job actually does or whether it previously succeeded or failed.
+A `Trigger` answers a single timing question, independent of what the job does or whether it previously succeeded.
 
 ```java
 public interface Trigger {
-    Instant nextFireTime(Instant lastRun);
+    Instant nextFireTime(Instant lastFireTime);
 }
 ```
 
-- **Input:** `lastRun`, an `Instant` (a specific point in time) — you can't compute "when next" without knowing "when last." Same logic as a medicine reminder: if the last dose was at 8:00 AM and it repeats every 4 hours, the next dose is 12:00 PM — the calculation needs the last timestamp.
-- **Output:** also an `Instant` — the next point in time the job should fire.
-- Implementations (`FixedRateTrigger`, `OneTimeTrigger`, later `CronTrigger`) each compute this differently, but the engine only ever talks to the interface.
+- **Input:** an `Instant`, because "when next" cannot be computed without "when last". If the last dose of a medicine was at 8:00 and it repeats every 4 hours, the next is 12:00.
+- **Output:** also an `Instant`, the next point in time the job should fire.
+- Implementations (`FixedRateTrigger`, `OneTimeTrigger`) compute this differently, but the engine only ever talks to the interface.
 
 ---
 
-## `RetryPolicy` — "should I retry, and how long should I wait?"
+## `RetryPolicy`: "should I retry, and how long should I wait?"
 
-Two separate questions bundled into one interface, since they're both about handling a failure.
+Two questions about handling a failure, bundled into one interface.
 
 ```java
 public interface RetryPolicy {
     boolean canRetry(int attemptNumber);
-    Duration backoffFor(int attemptNumber);
+    Duration getRetryDelay(int attemptNumber);
 }
 ```
 
-- **`canRetry(int attemptNumber)`** — takes the current attempt number (not a configured max — that's a setting the specific policy implementation already knows internally). Returns a `boolean` since it's a yes/no question.
-- **`backoffFor(int attemptNumber)`** — returns a `Duration` (a *length* of time, like "wait 8 seconds"), not an `Instant` (a specific clock time). A backoff policy computes *how long to wait*, not *what time it currently is*.
-- Implementations (`ExponentialBackoffPolicy`, `FixedDelayPolicy`) contain the actual math (e.g. `2^attemptNumber` seconds); the interface itself has none.
+- **`attemptNumber` is 1-based and is the attempt that just failed.** 1 is the original run, 2 is the first retry. A value below 1 is a bug and is rejected.
+- **`canRetry`** returns a `boolean`. With a maximum of 3 retries, a retry is allowed while the failed attempt number is at most 3, so a job can run up to 4 times in total.
+- **`getRetryDelay`** returns a `Duration` (a length of time, such as "wait 8 seconds"), not an `Instant`. The policy computes how long to wait; the engine adds that to the current time.
+- Implementations (`ExponentialBackoffPolicy`, `FixedDelayPolicy`) hold the actual arithmetic. A job with no policy gets a `FixedDelayPolicy` with zero retries, which means "never retry".
 
 ---
 
-## `JobStatus` — the lifecycle of a single execution
+## `JobStatus`: the lifecycle of a single execution
 
-An enum representing the fixed set of states one `JobExecution` can be in, plus the rules for which transitions between them are legal. This is an **enum with behavior** — the transition rules are baked into the type itself, so no code elsewhere in the system can set an illegal transition.
+An enum with behavior: it lists the possible states of one `JobExecution` and also knows which moves between them are legal, so no code elsewhere can create an illegal transition.
 
-```java
-public enum JobStatus {
-    PENDING, RUNNING, DONE, FAILED, CANCELLED;
-
-    boolean canTransitionTo(JobStatus next) {
-        return switch (this) {
-            case PENDING -> next == RUNNING || next == CANCELLED;
-            case RUNNING -> next == DONE || next == FAILED;
-            case FAILED  -> next == PENDING;
-            case DONE, CANCELLED -> false;
-        };
-    }
-}
-```
-
-| State | Meaning | Can transition to |
+| State | Meaning | Can move to |
 |---|---|---|
-| `PENDING` | Waiting to run (default starting state) | `RUNNING`, `CANCELLED` |
-| `RUNNING` | Currently executing | `DONE`, `FAILED` |
-| `DONE` | Finished successfully | *(nothing — permanent)* |
-| `FAILED` | Finished unsuccessfully | `PENDING` *(if the `RetryPolicy` allows another attempt)* |
-| `CANCELLED` | Manually stopped before running | *(nothing — permanent)* |
+| `PENDING` | Waiting to run (the starting state) | `RUNNING`, `CANCELLED` |
+| `RUNNING` | Claimed by a worker and executing | `DONE`, `FAILED` |
+| `DONE` | Finished successfully | nothing (final) |
+| `FAILED` | Finished unsuccessfully | nothing (final) |
+| `CANCELLED` | Stopped before it started running | nothing (final) |
 
-**Important distinction:** `JobStatus` belongs to a single `JobExecution` (one specific run), not to the recurring `JobDefinition` (the rule, like "clean up every 10 seconds"). When a recurring job fires again, the engine creates a **new** `JobExecution` record rather than reopening an old `DONE` one — this is why `DONE` has no outgoing transitions. Recurrence is handled by creating new records, not reusing old ones. Likewise, `CANCELLED` is a state, not a deletion — the job still exists for audit history, so there is no separate "delete" operation anywhere in the system.
+**Status belongs to an execution, not to a job.** A `JobDefinition` is the recurring rule ("clean up every 10 seconds"); a `JobExecution` is one run of it. When a recurring job fires again, the engine creates a **new** execution instead of reopening an old one, which is why `DONE`, `FAILED` and `CANCELLED` are all final.
+
+**A retry is a new execution, not a status moving backwards.** When a run fails and the retry policy allows another attempt, the engine creates a new execution with the attempt number increased by one. The failed run stays `FAILED` forever as part of the history. `CANCELLED` is likewise a state, not a deletion, so there is no delete operation anywhere in the system.
 
 ---
 
-## `JobStore` — remembers everything
+## `JobStore`: remembers everything
 
-The storage seam: everything the engine needs from persistence, without caring whether the underlying implementation is an in-memory structure or Oracle. Two implementations will exist — `InMemoryJobStore` (no database required, used for early development and demoing pure OOP) and `OracleJobStore` (the real DBMS-backed version) — both honoring this exact same contract.
+The storage seam: everything the engine needs from persistence, without caring whether the implementation is an in-memory structure or Oracle. Two implementations honor the same contract: `InMemoryJobStore` (no database, used for development and for demonstrating the object-oriented design) and `OracleJobStore` (the DBMS-backed version, in progress on the data track).
 
 ```java
 public interface JobStore {
     JobDefinition addJob(JobDefinition job) throws DuplicateJobException;
     Optional<JobDefinition> getJob(long id);
     List<JobDefinition> getAllJobs();
-    void updateStatus(long id, JobStatus newStatus);
+    void cancelJob(long id);
+
+    JobExecution createExecution(long jobId, int attemptNumber, Instant scheduledFor);
+    Optional<JobExecution> claimNextExecution(long workerId, Instant now);
+    void updateExecution(JobExecution execution);
+    List<JobExecution> listExecutions(long jobId);
 }
 ```
 
-- **`addJob`** — returns the saved `JobDefinition` (useful since a new ID may be generated on save) and throws `DuplicateJobException` if the job already exists — a genuinely abnormal case.
-- **`getJob(long id)`** — returns `Optional<JobDefinition>` rather than throwing. "Not found" is a routine, expected outcome (e.g. a job could be cancelled by one operator the instant before another operator looks it up), not a broken state — `Optional` lets the caller check for absence without a mandatory try/catch.
-- **`getAllJobs()`** — returns a `List<JobDefinition>`, possibly empty. No exception needed; zero jobs is a normal state, especially right after startup.
-- **`updateStatus(long id, JobStatus newStatus)`** — returns `void`. The caller already supplies both the id and the new status themselves, so there's nothing new to hand back.
-- **No delete method** — deliberately. Since cancellation is modeled as a `JobStatus` transition (`updateStatus(id, CANCELLED)`) rather than row deletion, a separate delete operation would work against the design and destroy audit history.
+- **`addJob`** returns the saved job (the store assigns the real id) and throws `DuplicateJobException` if a job with the same name already exists.
+- **`getJob`** returns an `Optional`, because "not found" is a routine outcome, not a broken state.
+- **`getAllJobs`** returns a possibly empty list; zero jobs is a normal state.
+- **`cancelJob`** marks the job inactive and cancels its pending runs. A run that is already running finishes, and no follow-up run is created. Nothing is deleted.
+- **`createExecution`** creates a new `PENDING` run. It refuses (with an `IllegalStateException`) if the job has been cancelled, which is how a schedule ends cleanly.
+- **`claimNextExecution`** is the concurrency primitive: it atomically finds the earliest due `PENDING` run (the lower id wins a tie), marks it `RUNNING` for the given worker and returns it. No two workers can ever receive the same run.
+- **`updateExecution`** saves a run's new state. It rejects stale copies that would move a run backwards and any change to the fields fixed at creation.
+- **`listExecutions`** returns a job's full run history.
+- **The store hands out copies of executions.** A caller's changes reach the store only through `updateExecution`, which is also how a database behaves. `JobDefinition` is immutable and is shared as is.
 
 ---
 
 ## Why this matters
 
-Every one of these five types is an abstraction the rest of the system depends on without needing to know the details underneath:
+Every one of these types is an abstraction the rest of the system uses without knowing the details underneath:
 - The engine calls `job.execute()` without knowing what kind of job it is.
-- The engine calls `trigger.nextFireTime(...)` without knowing if it's a fixed-rate or one-time trigger.
-- The engine calls `retryPolicy.canRetry(...)` without knowing if backoff is exponential or fixed.
-- The engine calls `store.addJob(...)` without knowing if it's writing to a `HashMap` or an Oracle table.
-- Every status change goes through `JobStatus.canTransitionTo(...)`, so illegal transitions are impossible by construction, not just checked ad hoc in scattered places.
+- The engine calls `trigger.nextFireTime(...)` without knowing whether it is fixed-rate or one-time.
+- The engine calls `retryPolicy.canRetry(...)` without knowing whether backoff is exponential or fixed.
+- The engine calls `store.claimNextExecution(...)` without knowing whether it is a synchronized method on a map or an Oracle query with row locking.
+- Every status change goes through `JobStatus.canTransitionTo(...)`, so illegal transitions are impossible by construction.
 
 This is what lets two people build the engine and the Oracle backend independently and have them come together correctly at the end.
