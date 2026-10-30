@@ -3,16 +3,7 @@ package com.dbos.retry;
 import java.time.Duration;
 
 /*
- * Every retry waits the same amount of time.
- *
- * Example: maxRetries = 3, delay = 2s
- *   attempt 1 failed -> retry after 2s
- *   attempt 2 failed -> retry after 2s
- *   attempt 3 failed -> retry after 2s
- *   attempt 4 failed -> no more retries
- *
- * With maxRetries = 0 this means "never retry", which is what a job with no
- * retry policy gets.
+    every delay of const time
  */
 public class FixedDelayPolicy implements RetryPolicy {
 

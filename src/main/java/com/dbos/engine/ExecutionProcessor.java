@@ -6,24 +6,13 @@ import com.dbos.store.JobStore;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Optional;
 
 /*
- * Handles one claimed run from start to finish:
- *   1. run the job
- *   2. record the outcome (DONE or FAILED) in the store
- *   3. schedule what comes next: a retry after a failure, otherwise the
- *      job's next regular run (or nothing, if the schedule has ended)
- *
- * Anything the job throws, including an Error such as StackOverflowError, is
- * an ordinary failure, so one bad job never stops the caller or leaves its run
- * stuck in RUNNING. Listener errors are swallowed for the same reason.
- * Store errors are not swallowed; they propagate to the caller.
- *
- * If the job was cancelled while the run was in progress, the run still
- * finishes normally, but the store refuses to create a follow-up run and the
- * schedule simply ends.
- */
+    Handles one claimed run from start to finish: runs the job, records whether
+    it worked, tells the listener, and plans what comes next.
+    Anything the job throws (even an Error) is an ordinary failed run, so one
+    bad job never stops the caller.
+*/
 final class ExecutionProcessor {
 
     private final JobStore store;
@@ -40,28 +29,28 @@ final class ExecutionProcessor {
 
     // the run must already be claimed (RUNNING)
     void process(JobExecution run) {
-        Optional<JobDefinition> found = store.getJob(run.getJobId());
-        if (found.isEmpty()) {
+        JobDefinition job = store.getJob(run.getJobId());
+        if (job == null) {
             // a run without a job rule cannot be executed
             run.markFailed(clock.instant());
             store.updateExecution(run);
             return;
         }
-        JobDefinition job = found.get();
 
-        fire(() -> listener.onRunStarted(job, copy(run)));
+        listener.onRunStarted(job, copy(run));
+
         Throwable failure = execute(job);
         Instant ended = clock.instant();
 
         if (failure == null) {
             run.markDone(ended);
             store.updateExecution(run);
-            fire(() -> listener.onRunSucceeded(job, copy(run)));
+            listener.onRunSucceeded(job, copy(run));
             scheduleNext(job, run, ended);
         } else {
             run.markFailed(ended);
             store.updateExecution(run);
-            fire(() -> listener.onRunFailed(job, copy(run), failure));
+            listener.onRunFailed(job, copy(run), failure);
             scheduleRetryOrNext(job, run, ended);
         }
     }
@@ -76,9 +65,9 @@ final class ExecutionProcessor {
     }
 
     private void scheduleRetryOrNext(JobDefinition job, JobExecution failed, Instant now) {
-        Optional<Instant> retryAt = planner.retryTime(job.getRetryPolicy(), failed.getAttemptNumber(), now);
-        if (retryAt.isPresent()) {
-            schedule(job, failed.getAttemptNumber() + 1, retryAt.get());
+        Instant retryAt = planner.retryTime(job.getRetryPolicy(), failed.getAttemptNumber(), now);
+        if (retryAt != null) {
+            schedule(job, failed.getAttemptNumber() + 1, retryAt);
         } else {
             scheduleNext(job, failed, now);
         }
@@ -86,34 +75,26 @@ final class ExecutionProcessor {
 
     // the regular next run always starts again at attempt 1
     private void scheduleNext(JobDefinition job, JobExecution finished, Instant now) {
-        Optional<Instant> next = planner.nextRun(job.getTrigger(), finished, now);
-        if (next.isEmpty()) {
-            fire(() -> listener.onScheduleEnded(job));
+        Instant next = planner.nextRun(job.getTrigger(), finished, now);
+        if (next == null) {
+            listener.onScheduleEnded(job);
             return;
         }
-        schedule(job, 1, next.get());
+        schedule(job, 1, next);
     }
 
     private void schedule(JobDefinition job, int attemptNumber, Instant at) {
         try {
             JobExecution created = store.createExecution(job.getId(), attemptNumber, at);
-            fire(() -> listener.onRunScheduled(job, copy(created)));
+            listener.onRunScheduled(job, copy(created));
         } catch (IllegalStateException cancelled) {
             // the store refuses runs for a cancelled job: a normal way for a schedule to end
-            fire(() -> listener.onScheduleEnded(job));
+            listener.onScheduleEnded(job);
         }
     }
 
-    // listeners get copies, so they cannot change the engine's own objects
+    // the listener gets a copy, so it cannot change the engine's own object
     private static JobExecution copy(JobExecution run) {
         return run.withId(run.getId());
-    }
-
-    private static void fire(Runnable event) {
-        try {
-            event.run();
-        } catch (RuntimeException ignored) {
-            // a faulty listener must not break job processing
-        }
     }
 }

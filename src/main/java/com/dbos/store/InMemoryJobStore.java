@@ -11,26 +11,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicLong;
 
-/*
- * Thread-safe, in-memory JobStore.
- *
- * - Every public method is synchronized, so each check-then-act step
- *   (duplicate name, claim, cancel) is atomic.
- * - JobDefinition is immutable, so it is shared as is.
- * - JobExecution is mutable, so it is copied every time it crosses the
- *   store's boundary. A caller's changes only reach the store through
- *   updateExecution, which is how the Oracle store behaves too.
- * - The store assigns every id itself, whatever id an incoming object carries.
- */
 public class InMemoryJobStore implements JobStore {
 
-    private final Map<Long, JobDefinition> jobs = new LinkedHashMap<>();
-    private final Map<Long, JobExecution> executions = new LinkedHashMap<>();
-    private final AtomicLong jobIdCounter = new AtomicLong(0);
-    private final AtomicLong executionIdCounter = new AtomicLong(0);
+    private final Map<Integer, JobDefinition> jobs = new LinkedHashMap<>();
+    private final Map<Integer, JobExecution> executions = new LinkedHashMap<>();
+    // plain counters are safe: they are only used inside synchronized methods
+    private int jobIdCounter = 0;
+    private int executionIdCounter = 0;
     private final Clock clock;
 
     public InMemoryJobStore() {
@@ -57,14 +45,14 @@ public class InMemoryJobStore implements JobStore {
             }
         }
 
-        JobDefinition saved = job.withId(jobIdCounter.incrementAndGet());
+        JobDefinition saved = job.withId(++jobIdCounter);
         jobs.put(saved.getId(), saved);
         return saved;
     }
 
     @Override
-    public synchronized Optional<JobDefinition> getJob(long id) {
-        return Optional.ofNullable(jobs.get(id));
+    public synchronized JobDefinition getJob(int id) {
+        return jobs.get(id);   // null if there is no such job
     }
 
     @Override
@@ -73,7 +61,7 @@ public class InMemoryJobStore implements JobStore {
     }
 
     @Override
-    public synchronized void cancelJob(long id) {
+    public synchronized void cancelJob(int id) {
         JobDefinition job = jobs.get(id);
         if (job == null) {
             throw new IllegalArgumentException("Job does not exist: " + id);
@@ -81,7 +69,6 @@ public class InMemoryJobStore implements JobStore {
 
         jobs.put(id, job.withActive(false));
 
-        // pending runs are cancelled; running and finished ones are left alone
         Instant cancelTime = clock.instant();
         for (JobExecution execution : executions.values()) {
             if (execution.getJobId() == id && execution.getStatus() == JobStatus.PENDING) {
@@ -90,10 +77,9 @@ public class InMemoryJobStore implements JobStore {
         }
     }
 
-    // ---------- executions ----------
 
     @Override
-    public synchronized JobExecution createExecution(long jobId, int attemptNumber, Instant scheduledFor) {
+    public synchronized JobExecution createExecution(int jobId, int attemptNumber, Instant scheduledFor) {
         JobDefinition job = jobs.get(jobId);
         if (job == null) {
             throw new IllegalArgumentException("Job does not exist: " + jobId);
@@ -105,13 +91,13 @@ public class InMemoryJobStore implements JobStore {
 
         // building the draft first validates the input before an id is used up
         JobExecution draft = new JobExecution(0, jobId, attemptNumber, scheduledFor);
-        JobExecution saved = draft.withId(executionIdCounter.incrementAndGet());
+        JobExecution saved = draft.withId(++executionIdCounter);
         executions.put(saved.getId(), saved);
         return copyOf(saved);
     }
 
     @Override
-    public synchronized Optional<JobExecution> claimNextExecution(long workerId, Instant now) {
+    public synchronized JobExecution claimNextExecution(int workerId, Instant now) {
         if (now == null) {
             throw new IllegalArgumentException("now cannot be null");
         }
@@ -129,12 +115,12 @@ public class InMemoryJobStore implements JobStore {
         }
 
         if (earliest == null) {
-            return Optional.empty();
+            return null;   // nothing is due
         }
 
         // changes the stored object, which never leaves this class; the caller gets a copy
         earliest.markRunning(workerId, now);
-        return Optional.of(copyOf(earliest));
+        return copyOf(earliest);
     }
 
     @Override
@@ -170,7 +156,7 @@ public class InMemoryJobStore implements JobStore {
     }
 
     @Override
-    public synchronized List<JobExecution> listExecutions(long jobId) {
+    public synchronized List<JobExecution> listExecutions(int jobId) {
         List<JobExecution> result = new ArrayList<>();
         for (JobExecution execution : executions.values()) {
             if (execution.getJobId() == jobId) {

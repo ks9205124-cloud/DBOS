@@ -17,10 +17,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -54,7 +52,7 @@ class WorkerPoolTest {
     void setUp() {
         clock = new TestClock(T0);
         store = new InMemoryJobStore(clock);
-        engine = new SchedulerEngine(store, clock, ExecutionListener.NOOP);
+        engine = new SchedulerEngine(store, clock, new ExecutionListener(false));
     }
 
     @AfterEach
@@ -153,12 +151,12 @@ class WorkerPoolTest {
             assertEquals(1, calls.get());
         }
         // several workers took part, all with ids from this pool
-        Set<Long> workerIds = new TreeSet<>();
+        Set<Integer> workerIds = new TreeSet<>();
         for (JobDefinition job : jobs) {
-            workerIds.add(store.listExecutions(job.getId()).get(0).getWorkerId().orElseThrow());
+            workerIds.add(store.listExecutions(job.getId()).get(0).getWorkerId());
         }
         assertTrue(workerIds.size() >= 2, "expected at least two workers, saw " + workerIds);
-        for (long id : workerIds) {
+        for (int id : workerIds) {
             assertTrue(id >= 1 && id <= 4, "unexpected worker id " + id);
         }
         // runs overlapped in time, but never more than the pool size
@@ -238,24 +236,20 @@ class WorkerPoolTest {
     @Test
     void aWorkerSurvivesStoreFailures() throws Exception {
         FlakyStore flaky = new FlakyStore(new InMemoryJobStore(clock), 3);
-        SchedulerEngine flakyEngine = new SchedulerEngine(flaky, clock, ExecutionListener.NOOP);
+        SchedulerEngine flakyEngine = new SchedulerEngine(flaky, clock, new ExecutionListener(false));
         JobDefinition job = register(flakyEngine, "after-outage", () -> { });
         makeEverythingDue();
 
-        List<Throwable> errors = new CopyOnWriteArrayList<>();
-        ExecutionListener errorListener = new ExecutionListener() {
-            @Override
-            public void onWorkerError(long workerId, Throwable problem) {
-                errors.add(problem);
-            }
-        };
-        pool = new WorkerPool(flakyEngine, 1, FAST_POLL, errorListener, null);
+        ExecutionListener errorListener = new ExecutionListener(false);
+        pool = new WorkerPool(flakyEngine, 1, FAST_POLL, errorListener);
         pool.start();
 
         assertTrue(waitUntil(() -> allDone(flaky, List.of(job)), PATIENCE), "the worker did not recover");
         assertTrue(pool.stop(PATIENCE));
+        List<String> errors = errorListener.getLines();
         assertEquals(3, errors.size());
-        assertEquals("db down", errors.get(0).getMessage());
+        assertTrue(errors.get(0).contains("worker 1 error"));
+        assertTrue(errors.get(0).contains("db down"));
     }
 
     @Test
@@ -340,7 +334,7 @@ class WorkerPoolTest {
         }
 
         @Override
-        public Optional<JobExecution> claimNextExecution(long workerId, Instant now) {
+        public JobExecution claimNextExecution(int workerId, Instant now) {
             if (failuresLeft.getAndDecrement() > 0) {
                 throw new IllegalStateException("db down");
             }
@@ -353,7 +347,7 @@ class WorkerPoolTest {
         }
 
         @Override
-        public Optional<JobDefinition> getJob(long id) {
+        public JobDefinition getJob(int id) {
             return real.getJob(id);
         }
 
@@ -363,12 +357,12 @@ class WorkerPoolTest {
         }
 
         @Override
-        public void cancelJob(long id) {
+        public void cancelJob(int id) {
             real.cancelJob(id);
         }
 
         @Override
-        public JobExecution createExecution(long jobId, int attemptNumber, Instant scheduledFor) {
+        public JobExecution createExecution(int jobId, int attemptNumber, Instant scheduledFor) {
             return real.createExecution(jobId, attemptNumber, scheduledFor);
         }
 
@@ -378,7 +372,7 @@ class WorkerPoolTest {
         }
 
         @Override
-        public List<JobExecution> listExecutions(long jobId) {
+        public List<JobExecution> listExecutions(int jobId) {
             return real.listExecutions(jobId);
         }
     }

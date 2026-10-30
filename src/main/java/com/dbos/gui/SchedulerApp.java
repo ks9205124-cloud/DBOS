@@ -4,10 +4,12 @@ import com.dbos.core.DuplicateJobException;
 import com.dbos.core.Job;
 import com.dbos.core.JobDefinition;
 import com.dbos.core.JobExecution;
-import com.dbos.core.JobExecutionException;
 import com.dbos.engine.ExecutionListener;
 import com.dbos.engine.SchedulerEngine;
 import com.dbos.engine.WorkerPool;
+import com.dbos.jobs.CleanupJob;
+import com.dbos.jobs.FlakyJob;
+import com.dbos.jobs.SlowJob;
 import com.dbos.retry.ExponentialBackoffPolicy;
 import com.dbos.retry.FixedDelayPolicy;
 import com.dbos.retry.RetryPolicy;
@@ -46,7 +48,6 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /*
  * Swing front end for the scheduler.
@@ -67,6 +68,8 @@ public class SchedulerApp extends JFrame {
 
     private final SchedulerEngine engine;
     private final WorkerPool pool;
+    private final ExecutionListener listener;
+    private int shownLines = 0;   // how many of the listener's lines are already in the Events pane
 
     // registration form
     private final JTextField nameField = new JTextField("my-job", 12);
@@ -93,9 +96,9 @@ public class SchedulerApp extends JFrame {
     public SchedulerApp() {
         super("DBOS Job Scheduler");
         Clock clock = Clock.systemUTC();
-        LogListener listener = new LogListener();
+        this.listener = new ExecutionListener();
         this.engine = new SchedulerEngine(new InMemoryJobStore(clock), clock, listener);
-        this.pool = new WorkerPool(engine, WORKER_COUNT, POLL_INTERVAL, listener, null);
+        this.pool = new WorkerPool(engine, WORKER_COUNT, POLL_INTERVAL, listener);
 
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout(8, 8));
@@ -133,7 +136,6 @@ public class SchedulerApp extends JFrame {
         new javax.swing.Timer(500, e -> refresh()).start();
     }
 
-    // ---------- form ----------
 
     private JPanel buildForm() {
         JButton register = new JButton("Register job");
@@ -194,7 +196,7 @@ public class SchedulerApp extends JFrame {
     }
 
     private void cancelSelected() {
-        long id = selectedJobId();
+        int id = selectedJobId();
         if (id < 0) {
             showError("Select a job in the table first.");
             return;
@@ -210,43 +212,34 @@ public class SchedulerApp extends JFrame {
     // a fresh Job per registration, so every flaky job has its own call counter
     private static Job newJob(int type) {
         if (type == 1) {
-            return () -> {
-                try {
-                    Thread.sleep(3000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new JobExecutionException("interrupted", e);
-                }
-            };
+            return new SlowJob();
         }
         if (type == 2) {
-            AtomicInteger calls = new AtomicInteger();
-            return () -> {
-                if (calls.incrementAndGet() <= 2) {
-                    throw new JobExecutionException("source unavailable (call " + calls.get() + ")");
-                }
-            };
+            return new FlakyJob();
         }
-        return () -> { };
+        return new CleanupJob();
     }
 
     // null means "no retry"; the builder then supplies a policy that never retries
     private RetryPolicy newRetryPolicy() {
         int max = (Integer) maxRetries.getValue();
         Duration delay = Duration.ofSeconds((Integer) retryDelay.getValue());
-        return switch (retryType.getSelectedIndex()) {
-            case 1 -> new FixedDelayPolicy(max, delay);
-            case 2 -> new ExponentialBackoffPolicy(max, delay);
-            default -> null;
-        };
+        int choice = retryType.getSelectedIndex();
+        if (choice == 1) {
+            return new FixedDelayPolicy(max, delay);
+        }
+        if (choice == 2) {
+            return new ExponentialBackoffPolicy(max, delay);
+        }
+        return null;
     }
 
-    // ---------- refreshing the tables ----------
 
     private void refresh() {
+        showNewLogLines();
         refreshing = true;
         try {
-            long selectedId = selectedJobId();
+            int selectedId = selectedJobId();
             jobsModel.setRowCount(0);
             int rowToSelect = -1;
             for (JobDefinition job : engine.listJobs()) {
@@ -267,7 +260,7 @@ public class SchedulerApp extends JFrame {
         }
     }
 
-    private void refreshRuns(long jobId) {
+    private void refreshRuns(int jobId) {
         runsModel.setRowCount(0);
         if (jobId < 0) {
             return;
@@ -278,21 +271,35 @@ public class SchedulerApp extends JFrame {
                     run.getAttemptNumber(),
                     run.getStatus(),
                     TIME.format(run.getScheduledFor()),
-                    run.getStartedAt().map(TIME::format).orElse("-"),
-                    run.getEndedAt().map(TIME::format).orElse("-"),
-                    run.getWorkerId().map(String::valueOf).orElse("-")});
+                    timeOrDash(run.getStartedAt()),
+                    timeOrDash(run.getEndedAt()),
+                    (run.getWorkerId() == null) ? "-" : run.getWorkerId()});
         }
     }
 
-    private long selectedJobId() {
+    // "-" when the time is not known yet
+    private static String timeOrDash(Instant time) {
+        return (time == null) ? "-" : TIME.format(time);
+    }
+
+    // adds the listener's new lines to the Events pane (called from the refresh timer)
+    private void showNewLogLines() {
+        List<String> lines = listener.getLines();
+        while (shownLines < lines.size()) {
+            log.append(lines.get(shownLines) + "\n");
+            shownLines++;
+        }
+        log.setCaretPosition(log.getDocument().getLength());
+    }
+
+    private int selectedJobId() {
         int row = jobsTable.getSelectedRow();
         if (row < 0) {
             return -1;
         }
-        return (Long) jobsModel.getValueAt(row, 0);
+        return (Integer) jobsModel.getValueAt(row, 0);
     }
 
-    // ---------- helpers ----------
 
     private void showError(String message) {
         JOptionPane.showMessageDialog(this, message, "Cannot do that", JOptionPane.WARNING_MESSAGE);
@@ -312,62 +319,11 @@ public class SchedulerApp extends JFrame {
         };
     }
 
-    // writes the engine's events into the log pane (called from the worker threads)
-    private class LogListener implements ExecutionListener {
-
-        void message(String text) {
-            String line = TIME.format(Instant.now()) + "  " + text + "\n";
-            SwingUtilities.invokeLater(() -> {
-                log.append(line);
-                log.setCaretPosition(log.getDocument().getLength());
-            });
-        }
-
-        @Override
-        public void onJobRegistered(JobDefinition job) {
-            message("registered '" + job.getName() + "'");
-        }
-
-        @Override
-        public void onRunScheduled(JobDefinition job, JobExecution run) {
-            message("scheduled '" + job.getName() + "' attempt " + run.getAttemptNumber()
-                    + " for " + TIME.format(run.getScheduledFor()));
-        }
-
-        @Override
-        public void onRunStarted(JobDefinition job, JobExecution run) {
-            message("started   '" + job.getName() + "' attempt " + run.getAttemptNumber()
-                    + " on worker " + run.getWorkerId().map(String::valueOf).orElse("?"));
-        }
-
-        @Override
-        public void onRunSucceeded(JobDefinition job, JobExecution run) {
-            message("DONE      '" + job.getName() + "' attempt " + run.getAttemptNumber());
-        }
-
-        @Override
-        public void onRunFailed(JobDefinition job, JobExecution run, Throwable cause) {
-            message("FAILED    '" + job.getName() + "' attempt " + run.getAttemptNumber()
-                    + ": " + cause.getMessage());
-        }
-
-        @Override
-        public void onScheduleEnded(JobDefinition job) {
-            message("schedule ended for '" + job.getName() + "'");
-        }
-
-        @Override
-        public void onWorkerError(long workerId, Throwable problem) {
-            message("worker " + workerId + " error: " + problem);
-        }
-    }
-
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception ignored) {
-                // the default look and feel is fine
             }
             SchedulerApp app = new SchedulerApp();
             app.setSize(1000, 700);

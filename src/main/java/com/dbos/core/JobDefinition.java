@@ -7,37 +7,17 @@ import com.dbos.trigger.Trigger;
 import java.time.Duration;
 
 /*
- * Why we use a Builder here:
- *
- * 1. Fields are set by name, and build() checks the result. A job needs a
- *    name, a Job to run and a Trigger to schedule it. The retry policy is
- *    optional: a job without one simply never retries.
- *
- * 2. Self-documenting call sites:
- *    Compare:
- *        new JobDefinition("db-log-archive", archiverJob, fixedTrigger, backoffPolicy);
- *    With:
- *        JobDefinition.builder("db-log-archive")
- *            .job(archiverJob)
- *            .trigger(fixedTrigger)
- *            .retryPolicy(backoffPolicy)
- *            .build();
- *
- *    Explicit method names make it immediately clear what each argument does,
- *    and stop you from accidentally swapping parameters in the wrong order.
- *
- * A JobDefinition is fully immutable. The id and the active flag are the only
- * things that ever differ between saved versions of a job, so they change by
- * making a copy (withId, withActive), never by mutation. Because a built
- * JobDefinition is always complete, the engine never has to check for nulls.
- */
+    all the properties of a job encapsulated under a class
+
+    we make use of builder pattern here
+*/
 
 public final class JobDefinition {
 
     // used when a job is built without a retry policy: zero retries, so the first failure is final
     private static final RetryPolicy NO_RETRY = new FixedDelayPolicy(0, Duration.ZERO);
 
-    private final long id;
+    private final int id;
     private final String name;
     private final Job job;
     private final RetryPolicy retryPolicy;
@@ -54,7 +34,7 @@ public final class JobDefinition {
     }
 
     // copy constructor: same job, with a different id and/or active flag
-    private JobDefinition(JobDefinition other, long id, boolean active) {
+    private JobDefinition(JobDefinition other, int id, boolean active) {
         this.id = id;
         this.name = other.name;
         this.job = other.job;
@@ -63,7 +43,7 @@ public final class JobDefinition {
         this.active = active;
     }
 
-    public long getId() {
+    public int getId() {
         return id;
     }
     public String getName() {
@@ -83,7 +63,7 @@ public final class JobDefinition {
     }
 
     // used by the store to assign the real id when a job is saved
-    public JobDefinition withId(long newId) {
+    public JobDefinition withId(int newId) {
         return new JobDefinition(this, newId, this.active);
     }
 
@@ -103,7 +83,7 @@ public final class JobDefinition {
 
     public static class JobDefinitionBuilder {
         private final String name;
-        private long id;                 // stays 0 until a store assigns a real one
+        private int id;                 // stays 0 until a store assigns a real one
         private Job job;
         private RetryPolicy retryPolicy;
         private Trigger trigger;
