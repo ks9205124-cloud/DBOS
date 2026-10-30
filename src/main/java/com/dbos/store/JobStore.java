@@ -6,20 +6,21 @@ import com.dbos.core.JobExecution;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 
 public interface JobStore {
 
     // JobDefinition
     JobDefinition addJob(JobDefinition job) throws DuplicateJobException;
-    Optional<JobDefinition> getJob(long id);
+    // null if there is no job with this id
+    JobDefinition getJob(int id);
     List<JobDefinition> getAllJobs();
-    void cancelJob(long id);
+    void cancelJob(int id);
 
     // JobExecution
-    JobExecution createExecution(long jobId, int attemptNumber, Instant scheduledFor);
-    Optional<JobExecution> claimNextExecution(long workerId, Instant now);
+    JobExecution createExecution(int jobId, int attemptNumber, Instant scheduledFor);
+    // null if no run is due
+    JobExecution claimNextExecution(int workerId, Instant now);
     void updateExecution(JobExecution execution);
-    List<JobExecution> listExecutions(long jobId);
+    List<JobExecution> listExecutions(int jobId);
 
 }

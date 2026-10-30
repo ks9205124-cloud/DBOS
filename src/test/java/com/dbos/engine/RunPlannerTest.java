@@ -11,9 +11,9 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RunPlannerTest {
@@ -55,9 +55,9 @@ class RunPlannerTest {
     void nextRunCountsFromTheScheduledTimeNotTheEndTime() {
         JobExecution finished = runScheduledAt(T0.plusSeconds(10));
 
-        Optional<Instant> next = planner.nextRun(every10Seconds, finished, T0.plusSeconds(12));
+        Instant next = planner.nextRun(every10Seconds, finished, T0.plusSeconds(12));
 
-        assertEquals(Optional.of(T0.plusSeconds(20)), next);
+        assertEquals(T0.plusSeconds(20), next);
     }
 
     @Test
@@ -65,9 +65,9 @@ class RunPlannerTest {
         JobExecution finished = runScheduledAt(T0.plusSeconds(10));
 
         // the run took 25 seconds, so the natural next time (12:00:20) has already passed
-        Optional<Instant> next = planner.nextRun(every10Seconds, finished, T0.plusSeconds(35));
+        Instant next = planner.nextRun(every10Seconds, finished, T0.plusSeconds(35));
 
-        assertEquals(Optional.of(T0.plusSeconds(35)), next);
+        assertEquals(T0.plusSeconds(35), next);
     }
 
     @Test
@@ -75,7 +75,7 @@ class RunPlannerTest {
         Trigger oneTime = new OneTimeTrigger(T0.plusSeconds(5));
         JobExecution finished = runScheduledAt(T0.plusSeconds(5));
 
-        assertEquals(Optional.empty(), planner.nextRun(oneTime, finished, T0.plusSeconds(6)));
+        assertNull(planner.nextRun(oneTime, finished, T0.plusSeconds(6)));
     }
 
     @Test
@@ -83,7 +83,7 @@ class RunPlannerTest {
         Trigger oneTime = new OneTimeTrigger(T0.plusSeconds(5));
         JobExecution finished = runScheduledAt(T0.plusSeconds(20));   // it actually ran late
 
-        assertEquals(Optional.empty(), planner.nextRun(oneTime, finished, T0.plusSeconds(21)));
+        assertNull(planner.nextRun(oneTime, finished, T0.plusSeconds(21)));
     }
 
     @Test
@@ -91,7 +91,7 @@ class RunPlannerTest {
         Trigger stuck = last -> last;
         JobExecution finished = runScheduledAt(T0);
 
-        assertEquals(Optional.empty(), planner.nextRun(stuck, finished, T0));
+        assertNull(planner.nextRun(stuck, finished, T0));
     }
 
     // ---------- retry ----------
@@ -100,23 +100,23 @@ class RunPlannerTest {
     void retryIsScheduledAfterTheBackoffDelay() {
         RetryPolicy policy = new ExponentialBackoffPolicy(3, Duration.ofSeconds(2));
 
-        assertEquals(Optional.of(T0.plusSeconds(2)), planner.retryTime(policy, 1, T0));
-        assertEquals(Optional.of(T0.plusSeconds(4)), planner.retryTime(policy, 2, T0));
-        assertEquals(Optional.of(T0.plusSeconds(8)), planner.retryTime(policy, 3, T0));
+        assertEquals(T0.plusSeconds(2), planner.retryTime(policy, 1, T0));
+        assertEquals(T0.plusSeconds(4), planner.retryTime(policy, 2, T0));
+        assertEquals(T0.plusSeconds(8), planner.retryTime(policy, 3, T0));
     }
 
     @Test
     void noRetryOnceTheLimitIsReached() {
         RetryPolicy policy = new FixedDelayPolicy(3, Duration.ofSeconds(2));
 
-        assertEquals(Optional.empty(), planner.retryTime(policy, 4, T0));
+        assertNull(planner.retryTime(policy, 4, T0));
     }
 
     @Test
     void aPolicyWithZeroRetriesNeverRetries() {
         RetryPolicy policy = new FixedDelayPolicy(0, Duration.ZERO);
 
-        assertEquals(Optional.empty(), planner.retryTime(policy, 1, T0));
+        assertNull(planner.retryTime(policy, 1, T0));
     }
 
     // ---------- bad input ----------

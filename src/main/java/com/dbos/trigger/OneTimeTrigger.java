@@ -4,18 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 
 // fxn -> when should this next run? once, at one fixed moment
-/*
-    Built from an exact moment:
-        new OneTimeTrigger(Instant.parse("2026-01-01T12:00:10Z"))
-        fire time = 12:00:10, always
 
-    Or from a delay, measured from the moment the trigger is created:
-        created at 21:00:00 with a 10s delay  ->  fire time = 21:00:10
-
-    nextFireTime ignores its argument and always returns that one fixed
-    moment, so it does not repeat. The engine ends the schedule when the
-    answer is not later than the run it just finished.
-*/
 public class OneTimeTrigger implements Trigger {
 
     private final Instant fireTime;

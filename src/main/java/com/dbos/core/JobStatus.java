@@ -19,10 +19,12 @@ public enum JobStatus {
     FAILED;
 
     public boolean canTransitionTo(JobStatus newStatus) {
-        return switch (this) {
-            case PENDING -> newStatus == CANCELLED || newStatus == RUNNING;
-            case RUNNING -> newStatus == DONE || newStatus == FAILED;
-            case DONE, FAILED, CANCELLED -> false;
-        };
+        if (this == PENDING) {
+            return newStatus == CANCELLED || newStatus == RUNNING;
+        }
+        if (this == RUNNING) {
+            return newStatus == DONE || newStatus == FAILED;
+        }
+        return false;   // DONE, FAILED and CANCELLED are final
     }
 }

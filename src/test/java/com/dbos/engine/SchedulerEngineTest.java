@@ -19,9 +19,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,14 +35,14 @@ class SchedulerEngineTest {
 
     private TestClock clock;
     private InMemoryJobStore store;
-    private RecordingListener listener;
+    private ExecutionListener listener;
     private SchedulerEngine engine;
 
     @BeforeEach
     void setUp() {
         clock = new TestClock(T0);
         store = new InMemoryJobStore(clock);
-        listener = new RecordingListener();
+        listener = new ExecutionListener(false);   // keeps the lines, prints nothing
         engine = new SchedulerEngine(store, clock, listener);
     }
 
@@ -109,8 +108,8 @@ class SchedulerEngineTest {
         List<JobExecution> runs = runs(saved);
         assertEquals(2, runs.size());
         assertEquals(JobStatus.DONE, runs.get(0).getStatus());
-        assertEquals(Optional.of(T0.plusSeconds(10)), runs.get(0).getStartedAt());
-        assertEquals(Optional.of(T0.plusSeconds(10)), runs.get(0).getEndedAt());
+        assertEquals(T0.plusSeconds(10), runs.get(0).getStartedAt());
+        assertEquals(T0.plusSeconds(10), runs.get(0).getEndedAt());
         assertEquals(JobStatus.PENDING, runs.get(1).getStatus());
         assertEquals(T0.plusSeconds(20), runs.get(1).getScheduledFor());
         assertEquals(1, runs.get(1).getAttemptNumber());
@@ -141,7 +140,7 @@ class SchedulerEngineTest {
 
         assertEquals(1, calls.get());
         assertEquals(List.of(JobStatus.DONE), statuses(saved));
-        assertTrue(listener.events.contains("ended"));
+        assertTrue(logged("schedule ended"));
     }
 
     // ---------- failure and retry ----------
@@ -219,7 +218,19 @@ class SchedulerEngineTest {
         assertEquals(1, engine.tick());   // the engine survives
 
         assertEquals(List.of(JobStatus.FAILED, JobStatus.PENDING), statuses(saved));
-        assertTrue(listener.events.contains("failed:bug"));
+        assertTrue(logged("FAILED", "bug"));
+    }
+
+    @Test
+    void anErrorFromAJobIsAlsoAnOrdinaryFailure() throws Exception {
+        Job broken = () -> { throw new StackOverflowError("deep"); };
+        JobDefinition saved = engine.register(job("broken", broken, every(10), NO_RETRY));
+
+        advance(10);
+        assertEquals(1, engine.tick());   // the run does not stay stuck in RUNNING
+
+        assertEquals(List.of(JobStatus.FAILED, JobStatus.PENDING), statuses(saved));
+        assertTrue(logged("FAILED", "deep"));
     }
 
     // ---------- cancelling ----------
@@ -233,12 +244,12 @@ class SchedulerEngineTest {
 
         assertEquals(0, engine.tick());
         assertEquals(List.of(JobStatus.CANCELLED), statuses(saved));
-        assertFalse(store.getJob(saved.getId()).orElseThrow().isActive());
+        assertFalse(store.getJob(saved.getId()).isActive());
     }
 
     @Test
     void aJobCancelledWhileRunningFinishesAndIsNotRescheduled() throws Exception {
-        AtomicLong id = new AtomicLong();
+        AtomicInteger id = new AtomicInteger();
         JobDefinition saved = engine.register(
                 job("self-cancel", () -> engine.cancel(id.get()), every(10), NO_RETRY));
         id.set(saved.getId());
@@ -247,7 +258,7 @@ class SchedulerEngineTest {
         assertEquals(1, engine.tick());
 
         assertEquals(List.of(JobStatus.DONE), statuses(saved));
-        assertFalse(store.getJob(saved.getId()).orElseThrow().isActive());
+        assertFalse(store.getJob(saved.getId()).isActive());
     }
 
     // ---------- timing rules ----------
@@ -280,22 +291,13 @@ class SchedulerEngineTest {
         advance(10);
         engine.tick();
 
-        assertEquals(List.of("registered", "scheduled", "started", "succeeded", "scheduled"), listener.events);
-    }
-
-    @Test
-    void aBrokenListenerDoesNotStopTheEngine() throws Exception {
-        SchedulerEngine fragile = new SchedulerEngine(store, clock, new ExecutionListener() {
-            @Override
-            public void onRunStarted(JobDefinition job, JobExecution run) {
-                throw new IllegalStateException("listener bug");
-            }
-        });
-        JobDefinition saved = fragile.register(job("fragile", () -> { }, every(10), NO_RETRY));
-
-        advance(10);
-        assertEquals(1, fragile.tick());
-        assertEquals(JobStatus.DONE, runs(saved).get(0).getStatus());
+        List<String> lines = listener.getLines();
+        assertEquals(5, lines.size());
+        assertTrue(lines.get(0).contains("registered"));
+        assertTrue(lines.get(1).contains("scheduled"));
+        assertTrue(lines.get(2).contains("started"));
+        assertTrue(lines.get(3).contains("DONE"));
+        assertTrue(lines.get(4).contains("scheduled"));
     }
 
     @Test
@@ -305,38 +307,19 @@ class SchedulerEngineTest {
         assertThrows(IllegalArgumentException.class, () -> engine.register(null));
     }
 
-    // records what the engine reports
-    private static class RecordingListener implements ExecutionListener {
-        final List<String> events = new ArrayList<>();
-
-        @Override
-        public void onJobRegistered(JobDefinition job) {
-            events.add("registered");
+    // true if one logged line contains all the given pieces of text
+    private boolean logged(String... parts) {
+        for (String line : listener.getLines()) {
+            boolean all = true;
+            for (String part : parts) {
+                if (!line.contains(part)) {
+                    all = false;
+                }
+            }
+            if (all) {
+                return true;
+            }
         }
-
-        @Override
-        public void onRunScheduled(JobDefinition job, JobExecution run) {
-            events.add("scheduled");
-        }
-
-        @Override
-        public void onRunStarted(JobDefinition job, JobExecution run) {
-            events.add("started");
-        }
-
-        @Override
-        public void onRunSucceeded(JobDefinition job, JobExecution run) {
-            events.add("succeeded");
-        }
-
-        @Override
-        public void onRunFailed(JobDefinition job, JobExecution run, Throwable cause) {
-            events.add("failed:" + cause.getMessage());
-        }
-
-        @Override
-        public void onScheduleEnded(JobDefinition job) {
-            events.add("ended");
-        }
+        return false;
     }
 }

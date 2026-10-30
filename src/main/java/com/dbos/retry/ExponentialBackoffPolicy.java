@@ -3,17 +3,7 @@ package com.dbos.retry;
 import java.time.Duration;
 
 /*
- * Each retry waits twice as long as the one before.
- *
- * Example: maxRetries = 3, baseDelay = 2s
- *   attempt 1 failed -> retry after 2s  (2s * 2^0)
- *   attempt 2 failed -> retry after 4s  (2s * 2^1)
- *   attempt 3 failed -> retry after 8s  (2s * 2^2)
- *   attempt 4 failed -> no more retries
- *
- * The doubling is a left shift, which stays in whole-number math (no
- * floating-point rounding). The exponent is capped so a very large
- * attempt number cannot overflow.
+    attempt 3 failed -> retry after 8s  (2s * 2^n-1)
  */
 public class ExponentialBackoffPolicy implements RetryPolicy {
 

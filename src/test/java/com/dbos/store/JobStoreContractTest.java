@@ -14,7 +14,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -24,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -91,8 +91,8 @@ abstract class JobStoreContractTest {
     void getJobFindsASavedJobAndReturnsEmptyForAMissingOne() throws Exception {
         JobDefinition saved = store.addJob(newJob("find-me"));
 
-        assertEquals(saved.getId(), store.getJob(saved.getId()).orElseThrow().getId());
-        assertTrue(store.getJob(saved.getId() + 1000).isEmpty());
+        assertEquals(saved.getId(), store.getJob(saved.getId()).getId());
+        assertNull(store.getJob(saved.getId() + 1000));
     }
 
     @Test
@@ -121,9 +121,9 @@ abstract class JobStoreContractTest {
         assertEquals(1, execution.getAttemptNumber());
         assertEquals(T0, execution.getScheduledFor());
         assertEquals(JobStatus.PENDING, execution.getStatus());
-        assertTrue(execution.getWorkerId().isEmpty());
-        assertTrue(execution.getStartedAt().isEmpty());
-        assertTrue(execution.getEndedAt().isEmpty());
+        assertNull(execution.getWorkerId());
+        assertNull(execution.getStartedAt());
+        assertNull(execution.getEndedAt());
     }
 
     @Test
@@ -161,10 +161,10 @@ abstract class JobStoreContractTest {
 
         Instant now = T0.plusSeconds(15);
 
-        assertEquals(at5.getId(), store.claimNextExecution(101, now).orElseThrow().getId());
-        assertEquals(at10.getId(), store.claimNextExecution(101, now).orElseThrow().getId());
-        assertEquals(at10Again.getId(), store.claimNextExecution(101, now).orElseThrow().getId());
-        assertTrue(store.claimNextExecution(101, now).isEmpty());
+        assertEquals(at5.getId(), store.claimNextExecution(101, now).getId());
+        assertEquals(at10.getId(), store.claimNextExecution(101, now).getId());
+        assertEquals(at10Again.getId(), store.claimNextExecution(101, now).getId());
+        assertNull(store.claimNextExecution(101, now));
     }
 
     @Test
@@ -172,7 +172,7 @@ abstract class JobStoreContractTest {
         JobDefinition job = store.addJob(newJob("future"));
         store.createExecution(job.getId(), 1, T0.plusSeconds(60));
 
-        assertTrue(store.claimNextExecution(1, T0).isEmpty());
+        assertNull(store.claimNextExecution(1, T0));
     }
 
     @Test
@@ -181,11 +181,11 @@ abstract class JobStoreContractTest {
         store.createExecution(job.getId(), 1, T0);
         Instant now = T0.plusSeconds(1);
 
-        JobExecution claimed = store.claimNextExecution(7, now).orElseThrow();
+        JobExecution claimed = store.claimNextExecution(7, now);
 
         assertEquals(JobStatus.RUNNING, claimed.getStatus());
-        assertEquals(Optional.of(7L), claimed.getWorkerId());
-        assertEquals(Optional.of(now), claimed.getStartedAt());
+        assertEquals(7, claimed.getWorkerId());
+        assertEquals(now, claimed.getStartedAt());
         // the claim itself is saved, with no updateExecution call
         assertEquals(JobStatus.RUNNING, store.listExecutions(job.getId()).get(0).getStatus());
     }
@@ -196,7 +196,7 @@ abstract class JobStoreContractTest {
     void changesToAClaimedExecutionAreNotVisibleUntilItIsUpdated() throws Exception {
         JobDefinition job = store.addJob(newJob("copy"));
         store.createExecution(job.getId(), 1, T0);
-        JobExecution claimed = store.claimNextExecution(1, T0).orElseThrow();
+        JobExecution claimed = store.claimNextExecution(1, T0);
 
         claimed.markDone(T0.plusSeconds(1));
         assertEquals(JobStatus.RUNNING, store.listExecutions(job.getId()).get(0).getStatus());
@@ -204,14 +204,14 @@ abstract class JobStoreContractTest {
         store.updateExecution(claimed);
         JobExecution saved = store.listExecutions(job.getId()).get(0);
         assertEquals(JobStatus.DONE, saved.getStatus());
-        assertEquals(Optional.of(T0.plusSeconds(1)), saved.getEndedAt());
+        assertEquals(T0.plusSeconds(1), saved.getEndedAt());
     }
 
     @Test
     void updateRejectsAStaleCopyThatWouldOverwriteANewerState() throws Exception {
         JobDefinition job = store.addJob(newJob("stale"));
         store.createExecution(job.getId(), 1, T0);
-        JobExecution claimed = store.claimNextExecution(1, T0).orElseThrow();
+        JobExecution claimed = store.claimNextExecution(1, T0);
         JobExecution staleCopy = claimed.withId(claimed.getId());   // taken while still RUNNING
 
         claimed.markDone(T0.plusSeconds(1));
@@ -270,12 +270,12 @@ abstract class JobStoreContractTest {
         store.createExecution(job.getId(), 1, T0.plusSeconds(1));
         JobExecution earliest = store.createExecution(job.getId(), 1, T0);   // the one the claim will take
 
-        JobExecution running = store.claimNextExecution(1, T0.plusSeconds(1)).orElseThrow();
+        JobExecution running = store.claimNextExecution(1, T0.plusSeconds(1));
         assertEquals(earliest.getId(), running.getId());
 
         store.cancelJob(job.getId());
 
-        assertFalse(store.getJob(job.getId()).orElseThrow().isActive());
+        assertFalse(store.getJob(job.getId()).isActive());
         for (JobExecution run : store.listExecutions(job.getId())) {
             if (run.getId() == earliest.getId()) {
                 assertEquals(JobStatus.RUNNING, run.getStatus());
@@ -315,15 +315,15 @@ abstract class JobStoreContractTest {
         int threads = 10;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch startGate = new CountDownLatch(1);
-        List<Future<List<Long>>> futures = new ArrayList<>();
+        List<Future<List<Integer>>> futures = new ArrayList<>();
         for (int t = 1; t <= threads; t++) {
-            final long workerId = t;
-            Callable<List<Long>> worker = () -> {
-                List<Long> mine = new ArrayList<>();
+            final int workerId = t;
+            Callable<List<Integer>> worker = () -> {
+                List<Integer> mine = new ArrayList<>();
                 startGate.await();   // every thread starts together
-                Optional<JobExecution> next;
-                while ((next = store.claimNextExecution(workerId, T0)).isPresent()) {
-                    mine.add(next.get().getId());
+                JobExecution next;
+                while ((next = store.claimNextExecution(workerId, T0)) != null) {
+                    mine.add(next.getId());
                 }
                 return mine;
             };
@@ -331,8 +331,8 @@ abstract class JobStoreContractTest {
         }
         startGate.countDown();
 
-        List<Long> all = new ArrayList<>();
-        for (Future<List<Long>> future : futures) {
+        List<Integer> all = new ArrayList<>();
+        for (Future<List<Integer>> future : futures) {
             all.addAll(future.get(10, TimeUnit.SECONDS));   // a failure inside a thread fails the test
         }
         pool.shutdown();

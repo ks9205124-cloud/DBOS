@@ -1,22 +1,21 @@
 package com.dbos.core;
 
 import java.time.Instant;
-import java.util.Optional;
 
 public class JobExecution {
 
     // initial fields
-    private final long id;
-    private final long jobId;
+    private final int id;
+    private final int jobId;
     private final int attemptNumber;
     private final Instant scheduledFor;
     // transition fields
     private JobStatus status = JobStatus.PENDING;
-    private Long workerId;
+    private Integer workerId;   // null until a worker claims the run
     private Instant startedAt;
     private Instant endedAt;
 
-    public JobExecution(long id, long jobId, int attemptNumber, Instant scheduledFor) {
+    public JobExecution(int id, int jobId, int attemptNumber, Instant scheduledFor) {
         this.id = id;
         this.jobId = jobId;
         this.attemptNumber = attemptNumber;
@@ -35,11 +34,11 @@ public class JobExecution {
         }
     }
 
-    public long getId() {
+    public int getId() {
         return id;
     }
 
-    public long getJobId() {
+    public int getJobId() {
         return jobId;
     }
 
@@ -55,16 +54,19 @@ public class JobExecution {
         return status;
     }
 
-    public Optional<Long> getWorkerId() {
-        return Optional.ofNullable(workerId);
+    // null if no worker has claimed this run yet
+    public Integer getWorkerId() {
+        return workerId;
     }
 
-    public Optional<Instant> getStartedAt() {
-        return Optional.ofNullable(startedAt);
+    // null if the run has not started yet
+    public Instant getStartedAt() {
+        return startedAt;
     }
 
-    public Optional<Instant> getEndedAt() {
-        return Optional.ofNullable(endedAt);
+    // null if the run has not ended yet
+    public Instant getEndedAt() {
+        return endedAt;
     }
 
     // working -> convert state from pending to running
@@ -72,7 +74,7 @@ public class JobExecution {
         when running startAt, workerId not initialized therefore initialize them,
         and change the state
     */
-    public void markRunning(long workerId, Instant startedAt) {
+    public void markRunning(int workerId, Instant startedAt) {
         if (!status.canTransitionTo(JobStatus.RUNNING)) {
             throw new IllegalStateException(
                     "Execution " + id + " cannot move from " + status + " to RUNNING");
@@ -130,7 +132,7 @@ public class JobExecution {
         this.endedAt = endedAt;
     }
 
-    public JobExecution withId(long newId) {
+    public JobExecution withId(int newId) {
         JobExecution copy = new JobExecution(newId, jobId, attemptNumber, scheduledFor);
         copy.status = this.status;
         copy.workerId = this.workerId;

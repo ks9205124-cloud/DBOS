@@ -8,28 +8,17 @@ import com.dbos.store.JobStore;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
+
 
 /*
- * The scheduler. It talks only to the JobStore interface, so the same engine
- * runs on the in-memory store and on Oracle.
- *
- *   register(job)  saves the job and schedules its first run
- *   cancel(id)     stops the job; its pending runs are cancelled
- *   runNext(w)     claims one due run for worker w and processes it
- *   tick()         processes every run that is due right now, one after another
- *
- * The scheduling rules live in RunPlanner and the handling of a single run in
- * ExecutionProcessor. The engine never prints; it reports through the
- * ExecutionListener. All time comes from the injected Clock.
- *
- * tick() runs on the calling thread. The worker pool added later calls
- * runNext(workerId) from several threads, which is safe because the store's
- * claim is atomic.
+    this class requires 3 other classes jobStore, clock, ExecutionListener
+    job store is basically a place to store jobs
+    clock used to get the current time ---> used at creating a job and managing the execution
+    Execution Listener takes care of printing
  */
 public class SchedulerEngine {
 
-    private static final long TICK_WORKER_ID = 1;
+    private static final int TICK_WORKER_ID = 1;
 
     private final JobStore store;
     private final Clock clock;
@@ -46,35 +35,51 @@ public class SchedulerEngine {
         }
         this.store = store;
         this.clock = clock;
-        this.listener = (listener == null) ? ExecutionListener.NOOP : listener;
+        this.listener = (listener == null) ? new ExecutionListener(false) : listener;
         this.processor = new ExecutionProcessor(store, planner, clock, this.listener);
     }
 
     // saves the job and schedules its first run; returns the saved job with its real id
-    public JobDefinition register(JobDefinition job) throws DuplicateJobException {
-        if (job == null) {
+    public JobDefinition register(JobDefinition jobDefinition) throws DuplicateJobException {
+        // if job is null dont do anything
+        if (jobDefinition == null) {
             throw new IllegalArgumentException("job is required");
         }
-        JobDefinition saved = store.addJob(job);
-        fire(() -> listener.onJobRegistered(saved));
+        // saved curr job and also store it in a var
+        JobDefinition saved = store.addJob(jobDefinition);
+        // log that the job has been saved
+        try {
+            listener.onJobRegistered(saved);
+        }
+        catch (RuntimeException e) {
+            // ignore
+        }
 
+        // todo will cover after understanding what planner is
         Instant firstRun = planner.firstRun(saved.getTrigger(), clock.instant());
+
         JobExecution run = store.createExecution(saved.getId(), 1, firstRun);
-        fire(() -> listener.onRunScheduled(saved, run));
+        // log that the job has been saved
+        try {
+            listener.onRunScheduled(saved, run);
+        }
+        catch (RuntimeException e) {
+            // ignore
+        }
         return saved;
     }
 
-    public void cancel(long jobId) {
+    public void cancel(int jobId) {
         store.cancelJob(jobId);
     }
 
     // claims and processes one due run; false if nothing was due
-    public boolean runNext(long workerId) {
-        Optional<JobExecution> claimed = store.claimNextExecution(workerId, clock.instant());
-        if (claimed.isEmpty()) {
+    public boolean runNext(int workerId) {
+        JobExecution claimed = store.claimNextExecution(workerId, clock.instant());
+        if (claimed == null) {
             return false;
         }
-        processor.process(claimed.get());
+        processor.process(claimed);
         return true;
     }
 
@@ -92,15 +97,7 @@ public class SchedulerEngine {
         return store.getAllJobs();
     }
 
-    public List<JobExecution> listExecutions(long jobId) {
+    public List<JobExecution> listExecutions(int jobId) {
         return store.listExecutions(jobId);
-    }
-
-    private static void fire(Runnable event) {
-        try {
-            event.run();
-        } catch (RuntimeException ignored) {
-            // a faulty listener must not break the engine
-        }
     }
 }

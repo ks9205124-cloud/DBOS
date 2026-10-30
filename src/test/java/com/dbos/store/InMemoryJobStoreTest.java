@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.ZoneOffset;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -53,7 +52,7 @@ class InMemoryJobStoreTest extends JobStoreContractTest {
 
         JobExecution run = fixedClockStore.listExecutions(job.getId()).get(0);
         assertEquals(JobStatus.CANCELLED, run.getStatus());
-        assertEquals(Optional.of(T0), run.getEndedAt());
+        assertEquals(T0, run.getEndedAt());
     }
 
     @Test
